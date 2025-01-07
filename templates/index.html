@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live View</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f9f9f9;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        .controls {
+            margin: 20px;
+        }
+
+        .controls button, .controls a {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+            text-decoration: none;
+            background-color: #007bff;
+            color: white;
+            border-radius: 5px;
+        }
+
+        .chart-container {
+            width: 100%; /* Make the charts take the full width of the container */
+            max-width: 100%; /* Ensure no horizontal scrolling occurs */
+            margin: 20px 0;
+            height: 400px; /* Default height */
+            transition: height 0.3s ease, width 0.3s ease; /* Smooth height and width transitions */
+        }
+
+        .slim .chart-container {
+            height: 200px; /* Slim mode height */
+        }
+
+        canvas {
+            display: block;
+            width: 100%; /* Ensure canvas fills its container */
+            height: 100%; /* Stretch to fit the container */
+        }
+    </style>
+</head>
+<body>
+    <h1>Live Data Visualization</h1>
+    <div class="controls">
+        <a href="/settings">Settings</a>
+        <a href="/viewer">Viewer</a>
+        <button id="pause">Pause</button>
+        <button id="resume" style="display:none;">Resume</button>
+        <button id="resetZoom">Reset Zoom</button>
+        <a href="/save">Save to File</a>
+        <button id="toggleHeight">Slim</button>
+    </div>
+    <div class="chart-container">
+        <canvas id="mbitChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="rssiChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="snrChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="redundancyChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="derivativeChart"></canvas>
+    </div>
+
+    <script>
+        const mbitCtx = document.getElementById('mbitChart').getContext('2d');
+        const rssiCtx = document.getElementById('rssiChart').getContext('2d');
+        const snrCtx = document.getElementById('snrChart').getContext('2d');
+        const redundancyCtx = document.getElementById('redundancyChart').getContext('2d');
+        const derivativeCtx = document.getElementById('derivativeChart').getContext('2d');
+
+        const zoomOptions = {
+            pan: {
+                enabled: true,
+                mode: 'x',
+            },
+            zoom: {
+                wheel: {
+                    enabled: true,
+                },
+                pinch: {
+                    enabled: true,
+                },
+                mode: 'x',
+            },
+        };
+
+        const mbitChart = new Chart(mbitCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'All Bytes (Mbit/s)', data: [], borderColor: 'red', fill: false },
+                    { label: 'Out Bytes (Mbit/s)', data: [], borderColor: 'blue', fill: false },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: {
+                    y: { min: 0, max: 100 },
+                },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const rssiChart = new Chart(rssiCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { beginAtZero: true, max: 1 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const snrChart = new Chart(snrCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { beginAtZero: true, max: 1 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const redundancyChart = new Chart(redundancyCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Redundancy', data: [], borderColor: 'green', fill: false },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { beginAtZero: true, max: 6 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const derivativeChart = new Chart(derivativeCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Derivative', data: [], borderColor: 'blue', fill: false },
+                    { label: 'FEC_REC', data: [], borderColor: 'purple', fill: false },
+                    { label: 'LOST', data: [], borderColor: 'orange', fill: false },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { min: -2, max: 2 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const chartContainers = document.querySelectorAll('.chart-container');
+        const allCharts = [mbitChart, rssiChart, snrChart, redundancyChart, derivativeChart];
+        document.getElementById('toggleHeight').addEventListener('click', () => {
+            document.body.classList.toggle('slim');
+            allCharts.forEach(chart => chart.update());
+            document.getElementById('toggleHeight').textContent = document.body.classList.contains('slim') ? 'Normal' : 'Slim';
+        });
+
+        document.getElementById('pause').addEventListener('click', () => {
+            paused = true;
+            document.getElementById('pause').style.display = 'none';
+            document.getElementById('resume').style.display = 'inline';
+        });
+
+        document.getElementById('resume').addEventListener('click', () => {
+            paused = false;
+            document.getElementById('resume').style.display = 'none';
+            document.getElementById('pause').style.display = 'inline';
+        });
+
+        document.getElementById('resetZoom').addEventListener('click', () => {
+            allCharts.forEach(chart => chart.resetZoom());
+        });
+
+        let paused = false;
+
+        function fetchData() {
+            if (paused) return;
+            fetch('/data')
+                .then((response) => response.json())
+                .then((data) => {
+                    const { rssi, snr, redundancy, derivative, fec_rec, lost, all_mbit, out_mbit, sample_indices, colors } = data;
+
+                    // Update Mbit/s Chart
+                    mbitChart.data.labels = sample_indices;
+                    mbitChart.data.datasets[0].data = all_mbit;
+                    mbitChart.data.datasets[1].data = out_mbit;
+                    mbitChart.update();
+
+                    // Update RSSI Chart
+                    updateChart(rssiChart, rssi, sample_indices, colors);
+
+                    // Update SNR Chart
+                    updateChart(snrChart, snr, sample_indices, colors);
+
+                    // Update Redundancy Chart
+                    redundancyChart.data.labels = sample_indices;
+                    redundancyChart.data.datasets[0].data = redundancy;
+                    redundancyChart.update();
+
+                    // Update Derivative Chart
+                    derivativeChart.data.labels = sample_indices;
+                    derivativeChart.data.datasets[0].data = derivative;
+                    derivativeChart.data.datasets[1].data = fec_rec;
+                    derivativeChart.data.datasets[2].data = lost;
+                    derivativeChart.update();
+                });
+        }
+
+        function updateChart(chart, data, labels, colors) {
+            chart.data.labels = labels;
+            chart.data.datasets = [];
+            for (const [key, values] of Object.entries(data)) {
+                chart.data.datasets.push({
+                    label: key,
+                    data: values,
+                    borderColor: colors[key],
+                    fill: false,
+                });
+            }
+            chart.update();
+        }
+
+        setInterval(fetchData, 500);
+    </script>
+</body>
+</html>
+

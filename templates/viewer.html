@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f9f9f9;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        .metadata {
+            margin-bottom: 20px;
+            font-size: 14px;
+            padding: 10px;
+            background: #efefef;
+            border-radius: 5px;
+        }
+
+        .controls {
+            margin: 20px;
+        }
+
+        .controls input {
+            padding: 10px;
+            font-size: 16px;
+        }
+
+        .controls button, .controls a {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+            text-decoration: none;
+            background-color: #007bff;
+            color: white;
+            border-radius: 5px;
+        }
+
+        .chart-container {
+            width: 100%; /* Make charts take the full width */
+            max-width: 100%; /* Prevent horizontal scrolling */
+            margin: 20px 0;
+            height: 400px; /* Default height */
+            transition: height 0.3s ease, width 0.3s ease; /* Smooth transitions */
+        }
+
+        .slim .chart-container {
+            height: 200px; /* Slim mode height */
+        }
+
+        canvas {
+            display: block;
+            width: 100%; /* Canvas stretches to container width */
+            height: 100%; /* Canvas fills container height */
+        }
+    </style>
+</head>
+<body>
+    <h1>Data Viewer</h1>
+    <div class="metadata" id="metadata">
+        <p><strong>Metadata will be displayed here after loading data.</strong></p>
+    </div>
+    <div class="controls">
+        <input type="file" id="fileInput">
+        <button id="loadData">Load Data</button>
+        <a href="/">Back to Live View</a>
+        <button id="resetZoom">Reset Zoom</button>
+        <button id="toggleHeight">Slim</button>
+    </div>
+    <div class="chart-container">
+        <canvas id="mbitChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="rssiChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="snrChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="redundancyChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="derivativeChart"></canvas>
+    </div>
+
+    <script>
+        const mbitCtx = document.getElementById('mbitChart').getContext('2d');
+        const rssiCtx = document.getElementById('rssiChart').getContext('2d');
+        const snrCtx = document.getElementById('snrChart').getContext('2d');
+        const redundancyCtx = document.getElementById('redundancyChart').getContext('2d');
+        const derivativeCtx = document.getElementById('derivativeChart').getContext('2d');
+
+        const zoomOptions = {
+            pan: {
+                enabled: true,
+                mode: 'x',
+            },
+            zoom: {
+                wheel: {
+                    enabled: true,
+                },
+                pinch: {
+                    enabled: true,
+                },
+                mode: 'x',
+            },
+        };
+
+        const mbitChart = new Chart(mbitCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'All Bytes (Mbit/s)', data: [], borderColor: 'red', fill: false },
+                    { label: 'Out Bytes (Mbit/s)', data: [], borderColor: 'blue', fill: false },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: {
+                    y: { min: 0, max: 100 },
+                },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const rssiChart = new Chart(rssiCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { beginAtZero: true, max: 1 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const snrChart = new Chart(snrCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { beginAtZero: true, max: 1 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const redundancyChart = new Chart(redundancyCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Redundancy', data: [], borderColor: 'green', fill: false },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { beginAtZero: true, max: 6 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const derivativeChart = new Chart(derivativeCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Derivative', data: [], borderColor: 'blue', fill: false },
+                    { label: 'FEC_REC', data: [], borderColor: 'purple', fill: false },
+                    { label: 'LOST', data: [], borderColor: 'orange', fill: false },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                elements: { point: { radius: 0 } },
+                scales: { y: { min: -2, max: 2 } },
+                plugins: { legend: { display: true }, zoom: zoomOptions },
+            },
+        });
+
+        const chartContainers = document.querySelectorAll('.chart-container');
+        const allCharts = [mbitChart, rssiChart, snrChart, redundancyChart, derivativeChart];
+
+        document.getElementById('toggleHeight').addEventListener('click', () => {
+            document.body.classList.toggle('slim');
+            allCharts.forEach(chart => chart.update());
+            document.getElementById('toggleHeight').textContent = document.body.classList.contains('slim') ? 'Normal' : 'Slim';
+        });
+
+        document.getElementById('resetZoom').addEventListener('click', () => {
+            allCharts.forEach(chart => chart.resetZoom());
+        });
+
+        document.getElementById('loadData').addEventListener('click', () => {
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput.files.length === 0) {
+                alert('Please select a file!');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const data = JSON.parse(event.target.result);
+                const { rssi, snr, redundancy, derivative, fec_rec, lost, all_mbit, out_mbit, sample_indices, colors, settings, log_interval } = data;
+
+                // Display metadata
+                displayMetadata(settings, log_interval);
+
+                // Update Mbit/s Chart
+                mbitChart.data.labels = sample_indices;
+                mbitChart.data.datasets[0].data = all_mbit;
+                mbitChart.data.datasets[1].data = out_mbit;
+                mbitChart.update();
+
+                // Update RSSI Chart
+                updateChart(rssiChart, rssi, sample_indices, colors);
+
+                // Update SNR Chart
+                updateChart(snrChart, snr, sample_indices, colors);
+
+                // Update Redundancy Chart
+                redundancyChart.data.labels = sample_indices;
+                redundancyChart.data.datasets[0].data = redundancy;
+                redundancyChart.update();
+
+                // Update Derivative Chart
+                derivativeChart.data.labels = sample_indices;
+                derivativeChart.data.datasets[0].data = derivative;
+                derivativeChart.data.datasets[1].data = fec_rec;
+                derivativeChart.data.datasets[2].data = lost;
+                derivativeChart.update();
+            };
+            reader.readAsText(file);
+        });
+
+        function displayMetadata(settings, logInterval) {
+            const metadataDiv = document.getElementById('metadata');
+            metadataDiv.innerHTML = `
+                <p><strong>Server IP:</strong> ${settings.JSON_STREAM_HOST}</p>
+                <p><strong>Server Port:</strong> ${settings.JSON_STREAM_PORT}</p>
+                <p><strong>RSSI Range:</strong> ${settings.RSSI_MIN} to ${settings.RSSI_MAX}</p>
+                <p><strong>SNR Range:</strong> ${settings.SNR_MIN} to ${settings.SNR_MAX}</p>
+                <p><strong>Data Redundancy Range:</strong> ${settings.DATA_REDUNDANCY_MIN} to ${settings.DATA_REDUNDANCY_MAX}</p>
+                <p><strong>Derivative Window:</strong> ${settings.DERIVATIVE_WINDOW}</p>
+                <p><strong>Derivative Range:</strong> ${settings.DERIVATIVE_MIN} to ${settings.DERIVATIVE_MAX}</p>
+                <p><strong>FEC_REC Range:</strong> ${settings.FEC_REC_MIN} to ${settings.FEC_REC_MAX}</p>
+                <p><strong>LOST Range:</strong> ${settings.LOST_MIN} to ${settings.LOST_MAX}</p>
+                <p><strong>Mbit/s Range:</strong> ${settings.MBIT_MIN} to ${settings.MBIT_MAX}</p>
+                <p><strong>Max Samples:</strong> ${settings.MAX_SAMPLES}</p>
+                <p><strong>Socket Timeout:</strong> ${settings.SOCKET_TIMEOUT} seconds</p>
+                <p><strong>Log Interval:</strong> ${logInterval || "N/A"} ms</p>
+            `;
+        }
+
+        function updateChart(chart, data, labels, colors) {
+            chart.data.labels = labels;
+            chart.data.datasets = [];
+            for (const [key, values] of Object.entries(data)) {
+                chart.data.datasets.push({
+                    label: key,
+                    data: values,
+                    borderColor: colors[key],
+                    fill: false,
+                });
+            }
+            chart.update();
+        }
+    </script>
+</body>
+</html>
+

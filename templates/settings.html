@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f9f9f9;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+            max-width: 600px;
+            margin: 0 auto;
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        label {
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+
+        input {
+            margin-bottom: 20px;
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #cccccc;
+            border-radius: 5px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            text-decoration: none;
+            color: #007bff;
+            font-weight: bold;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <h1>Settings</h1>
+    <form method="POST" action="/settings">
+        <label for="JSON_STREAM_HOST">Server IP</label>
+        <input type="text" id="JSON_STREAM_HOST" name="JSON_STREAM_HOST" value="{{ settings.JSON_STREAM_HOST }}">
+
+        <label for="JSON_STREAM_PORT">Server Port</label>
+        <input type="number" id="JSON_STREAM_PORT" name="JSON_STREAM_PORT" value="{{ settings.JSON_STREAM_PORT }}">
+
+        <label for="RSSI_MIN">RSSI Min</label>
+        <input type="number" id="RSSI_MIN" name="RSSI_MIN" value="{{ settings.RSSI_MIN }}">
+
+        <label for="RSSI_MAX">RSSI Max</label>
+        <input type="number" id="RSSI_MAX" name="RSSI_MAX" value="{{ settings.RSSI_MAX }}">
+
+        <label for="SNR_MIN">SNR Min</label>
+        <input type="number" id="SNR_MIN" name="SNR_MIN" value="{{ settings.SNR_MIN }}">
+
+        <label for="SNR_MAX">SNR Max</label>
+        <input type="number" id="SNR_MAX" name="SNR_MAX" value="{{ settings.SNR_MAX }}">
+
+        <label for="DATA_REDUNDANCY_MIN">Data Redundancy Min</label>
+        <input type="number" id="DATA_REDUNDANCY_MIN" name="DATA_REDUNDANCY_MIN" value="{{ settings.DATA_REDUNDANCY_MIN }}">
+
+        <label for="DATA_REDUNDANCY_MAX">Data Redundancy Max</label>
+        <input type="number" id="DATA_REDUNDANCY_MAX" name="DATA_REDUNDANCY_MAX" value="{{ settings.DATA_REDUNDANCY_MAX }}">
+
+        <label for="DERIVATIVE_WINDOW">Derivative Window</label>
+        <input type="number" id="DERIVATIVE_WINDOW" name="DERIVATIVE_WINDOW" value="{{ settings.DERIVATIVE_WINDOW }}">
+
+        <label for="DERIVATIVE_MIN">Derivative Min</label>
+        <input type="number" id="DERIVATIVE_MIN" name="DERIVATIVE_MIN" value="{{ settings.DERIVATIVE_MIN }}">
+
+        <label for="DERIVATIVE_MAX">Derivative Max</label>
+        <input type="number" id="DERIVATIVE_MAX" name="DERIVATIVE_MAX" value="{{ settings.DERIVATIVE_MAX }}">
+
+        <label for="FEC_REC_MIN">FEC_REC Min</label>
+        <input type="number" id="FEC_REC_MIN" name="FEC_REC_MIN" value="{{ settings.FEC_REC_MIN }}">
+
+        <label for="FEC_REC_MAX">FEC_REC Max</label>
+        <input type="number" id="FEC_REC_MAX" name="FEC_REC_MAX" value="{{ settings.FEC_REC_MAX }}">
+
+        <label for="LOST_MIN">LOST Min</label>
+        <input type="number" id="LOST_MIN" name="LOST_MIN" value="{{ settings.LOST_MIN }}">
+
+        <label for="LOST_MAX">LOST Max</label>
+        <input type="number" id="LOST_MAX" name="LOST_MAX" value="{{ settings.LOST_MAX }}">
+
+        <label for="MBIT_MIN">Mbit/s Min</label>
+        <input type="number" id="MBIT_MIN" name="MBIT_MIN" value="{{ settings.MBIT_MIN }}">
+
+        <label for="MBIT_MAX">Mbit/s Max</label>
+        <input type="number" id="MBIT_MAX" name="MBIT_MAX" value="{{ settings.MBIT_MAX }}">
+
+        <label for="MAX_SAMPLES">Max Samples</label>
+        <input type="number" id="MAX_SAMPLES" name="MAX_SAMPLES" value="{{ settings.MAX_SAMPLES }}">
+
+        <label for="SOCKET_TIMEOUT">Socket Timeout (seconds)</label>
+        <input type="number" id="SOCKET_TIMEOUT" name="SOCKET_TIMEOUT" value="{{ settings.SOCKET_TIMEOUT }}">
+
+        <button type="submit">Save Settings</button>
+    </form>
+    <a href="/">Back to Live View</a>
+</body>
+</html>
+
