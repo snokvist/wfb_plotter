@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UDP Settings</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f9f9f9;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+            max-width: 600px;
+            margin: 0 auto;
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        label {
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+
+        input {
+            margin-bottom: 20px;
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #cccccc;
+            border-radius: 5px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            text-decoration: none;
+            color: #007bff;
+            font-weight: bold;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .log-container {
+            max-width: 600px;
+            margin: 20px auto;
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+            max-height: 300px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        .log-container p {
+            margin: 0;
+            padding: 2px;
+        }
+    </style>
+</head>
+<body>
+    <h1>UDP Stream Settings</h1>
+    <form method="POST" action="/udp-settings">
+        <label for="UDP_IP">UDP IP Address</label>
+        <input type="text" id="UDP_IP" name="UDP_IP" value="{{ settings.UDP_IP }}">
+
+        <label for="UDP_PORT">UDP Port</label>
+        <input type="number" id="UDP_PORT" name="UDP_PORT" value="{{ settings.UDP_PORT }}">
+
+        <button type="submit" name="start">Start Stream</button>
+        <button type="submit" name="stop">Stop Stream</button>
+    </form>
+
+    <div class="log-container" id="udpLog">
+        <p><strong>Streaming Log:</strong></p>
+    </div>
+
+    <button id="fetchLogs">Fetch Latest Logs</button>
+    <a href="/">Back to Live View</a>
+
+    <script>
+        const logContainer = document.getElementById('udpLog');
+        const fetchLogsButton = document.getElementById('fetchLogs');
+
+        function fetchLogData() {
+            fetch('/udp-log')
+                .then(response => response.json())
+                .then(data => {
+                    logContainer.innerHTML = '<p><strong>Streaming Log:</strong></p>';
+                    data.logs.forEach(log => {
+                        const logEntry = document.createElement('p');
+                        logEntry.textContent = log;
+                        logContainer.appendChild(logEntry);
+                    });
+                    logContainer.scrollTop = logContainer.scrollHeight;
+                })
+                .catch(error => {
+                    console.error('Error fetching log data:', error);
+                });
+        }
+
+        fetchLogsButton.addEventListener('click', fetchLogData);
+    </script>
+</body>
+</html>
