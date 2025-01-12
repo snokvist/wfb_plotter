@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, Response
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 import threading
 import socket
 import json
@@ -10,6 +10,7 @@ from collections import deque
 import os
 import sys
 import configparser
+from udp_streamer import UDPStreamer  # Import the external UDP streaming module
 
 # Configuration File
 CONFIG_FILE = "plotter.cfg"
@@ -37,7 +38,9 @@ DEFAULT_CONFIG = {
         "LOST_MIN": "0",
         "LOST_MAX": "10",
         "MBIT_MIN": "0",
-        "MBIT_MAX": "100"
+        "MBIT_MAX": "100",
+        "UDP_IP": "127.0.0.1",
+        "UDP_PORT": "5005"
     }
 }
 
@@ -71,12 +74,14 @@ settings = {
     "LOST_MAX": int(config.get("Settings", "LOST_MAX")),
     "MBIT_MIN": float(config.get("Settings", "MBIT_MIN")),
     "MBIT_MAX": float(config.get("Settings", "MBIT_MAX")),
+    "UDP_IP": config.get("Settings", "UDP_IP"),
+    "UDP_PORT": int(config.get("Settings", "UDP_PORT")),
 }
 
 # Shared Data for Visualizations
 sample_indices = deque(range(settings["MAX_SAMPLES"]), maxlen=settings["MAX_SAMPLES"])
-rssi_values = {}
-snr_values = {}
+rssi_values = {}  # normalized RSSI by antenna
+snr_values = {}   # normalized SNR by antenna
 redundancy_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 derivative_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
@@ -84,7 +89,17 @@ lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"
 all_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 out_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 colors = {}
-log_interval = None  # Extracted from the "settings" JSON type message
+log_interval = None  # Extracted from the "settings" JSON
+
+# NEW: Raw Data Setup
+# We'll store raw RSSI and SNR per antenna, and raw FEC_REC and LOST globally.
+raw_rssi_values = {}  # raw RSSI by antenna
+raw_snr_values = {}   # raw SNR by antenna
+raw_fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+raw_lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+
+# UDP Streamer Instance
+udp_streamer = UDPStreamer(settings["UDP_IP"], settings["UDP_PORT"])
 
 # Flask App
 app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), 'templates'))
@@ -120,7 +135,13 @@ def settings_page():
         with open(CONFIG_FILE, "w") as configfile:
             config.write(configfile)
 
-        global sample_indices, rssi_values, snr_values, redundancy_values, derivative_values, fec_rec_values, lost_values, all_mbit_values, out_mbit_values
+        # Reset our data structures because MAX_SAMPLES or other settings may have changed
+        global sample_indices
+        global rssi_values, snr_values
+        global redundancy_values, derivative_values, fec_rec_values, lost_values
+        global all_mbit_values, out_mbit_values
+        global raw_rssi_values, raw_snr_values, raw_fec_rec_values, raw_lost_values
+
         sample_indices = deque(range(settings["MAX_SAMPLES"]), maxlen=settings["MAX_SAMPLES"])
         rssi_values = {}
         snr_values = {}
@@ -131,6 +152,15 @@ def settings_page():
         all_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
         out_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
+        # NEW: Reset raw data as well
+        raw_rssi_values = {}
+        raw_snr_values = {}
+        raw_fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+        raw_lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+
+        # Update UDP Streamer settings
+        udp_streamer.update_settings(settings["UDP_IP"], settings["UDP_PORT"])
+
         restart_flag.set()
         return redirect(url_for('index'))
 
@@ -139,6 +169,9 @@ def settings_page():
 
 @app.route('/data')
 def data():
+    """
+    Existing data endpoint - unchanged format
+    """
     return jsonify({
         'rssi': {k: list(v) for k, v in rssi_values.items()},
         'snr': {k: list(v) for k, v in snr_values.items()},
@@ -155,67 +188,60 @@ def data():
     })
 
 
-@app.route('/save')
-def save_data():
-    filename = "/tmp/data.json"
-    try:
-        with open(filename, 'w') as f:
-            json.dump({
-                'rssi': {k: list(v) for k, v in rssi_values.items()},
-                'snr': {k: list(v) for k, v in snr_values.items()},
-                'redundancy': list(redundancy_values),
-                'derivative': list(derivative_values),
-                'fec_rec': list(fec_rec_values),
-                'lost': list(lost_values),
-                'all_mbit': list(all_mbit_values),
-                'out_mbit': list(out_mbit_values),
-                'sample_indices': list(sample_indices),
-                'colors': colors,
-                'settings': settings,
-                'log_interval': log_interval,  # Include log_interval as metadata
-            }, f, indent=4)
-        return send_file(filename, as_attachment=True)
-    except Exception as e:
-        print(f"Error saving data to file: {e}")
-        return "An error occurred while saving the file. Please try again later.", 500
+# NEW: Raw Data Endpoint
+@app.route('/data/raw')
+def data_raw():
+    """
+    Expose only raw (unnormalized) RSSI, SNR, FEC_REC, and LOST values.
+    """
+    return jsonify({
+        'raw_rssi': {antenna: list(values) for antenna, values in raw_rssi_values.items()},
+        'raw_snr': {antenna: list(values) for antenna, values in raw_snr_values.items()},
+        'raw_fec_rec': list(raw_fec_rec_values),
+        'raw_lost': list(raw_lost_values),
+        'sample_indices': list(sample_indices),
+    })
 
 
-@app.route('/viewer')
-def viewer_page():
-    return render_template('viewer.html')
+@app.route('/udp-log')
+def udp_log():
+    """
+    Endpoint to retrieve the UDP streamer logs.
+    """
+    return jsonify({"logs": udp_streamer.get_logs()})
 
 
-@app.route('/raw_data')
-def raw_data():
-    def generate_raw_data():
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(settings["SOCKET_TIMEOUT"])
-                s.connect((settings["JSON_STREAM_HOST"], settings["JSON_STREAM_PORT"]))
-                print(f"Connected to JSON stream at {settings['JSON_STREAM_HOST']}:{settings['JSON_STREAM_PORT']} for raw data.")
-                buffer = ""
+@app.route('/udp-settings', methods=['GET', 'POST'])
+def udp_settings():
+    """
+    Endpoint to configure and control the UDP streamer.
+    """
+    if request.method == 'POST':
+        udp_ip = request.form.get('UDP_IP', settings['UDP_IP'])
+        udp_port = request.form.get('UDP_PORT', settings['UDP_PORT'])
 
-                while not shutdown_flag.is_set():
-                    try:
-                        data = s.recv(4096).decode('utf-8')
-                        if not data:
-                            break
-                        buffer += data
-                        lines = buffer.split('\n')
-                        buffer = lines[-1]
+        # Update the settings
+        settings['UDP_IP'] = udp_ip
+        settings['UDP_PORT'] = int(udp_port)
 
-                        for line in lines[:-1]:
-                            yield f"{line}\n"  # Stream each line to the client
-                    except socket.timeout:
-                        yield "Timeout waiting for data from the JSON server.\n"
-                        break
-                    except ConnectionError:
-                        yield "Connection to JSON server lost.\n"
-                        break
-        except Exception as e:
-            yield f"Error: {e}\n"
+        # Save updated settings to the configuration file
+        config.set("Settings", "UDP_IP", udp_ip)
+        config.set("Settings", "UDP_PORT", str(udp_port))
+        with open(CONFIG_FILE, "w") as configfile:
+            config.write(configfile)
 
-    return Response(generate_raw_data(), content_type='text/plain; charset=utf-8')
+        # Update the UDP streamer
+        udp_streamer.update_settings(udp_ip, int(udp_port))
+
+        # Handle start/stop commands
+        if 'start' in request.form:
+            udp_streamer.start()
+        elif 'stop' in request.form:
+            udp_streamer.stop()
+
+        return redirect(url_for('udp_settings'))
+
+    return render_template('udp_settings.html', settings=settings, udp_running=udp_streamer.is_running())
 
 
 def compute_derivative():
@@ -263,7 +289,11 @@ def get_random_color():
 
 
 def listen_to_stream():
-    global rssi_values, snr_values, redundancy_values, derivative_values, fec_rec_values, lost_values, all_mbit_values, out_mbit_values, colors, log_interval
+    global rssi_values, snr_values
+    global redundancy_values, derivative_values, fec_rec_values, lost_values
+    global all_mbit_values, out_mbit_values, colors, log_interval
+    # NEW: Also reference raw data globals
+    global raw_rssi_values, raw_snr_values, raw_fec_rec_values, raw_lost_values
 
     while not shutdown_flag.is_set():
         if restart_flag.is_set():
@@ -312,11 +342,23 @@ def listen_to_stream():
                                     derivative = compute_derivative()
                                     derivative_values.append(derivative)
 
-                                    # Normalize and append FEC_REC and LOST values
+                                    # RAW + Normalized FEC_REC
                                     fec_rec = packets.get("fec_rec", [0])[0]
+                                    raw_fec_rec_values.append(fec_rec)  # NEW: store raw value
+                                    fec_rec_values.append(normalize_value(
+                                        fec_rec,
+                                        settings["FEC_REC_MIN"],
+                                        settings["FEC_REC_MAX"]
+                                    ))
+
+                                    # RAW + Normalized LOST
                                     lost = packets.get("lost", [0])[0]
-                                    fec_rec_values.append(normalize_value(fec_rec, settings["FEC_REC_MIN"], settings["FEC_REC_MAX"]))
-                                    lost_values.append(normalize_value(lost, settings["LOST_MIN"], settings["LOST_MAX"]))
+                                    raw_lost_values.append(lost)  # NEW: store raw value
+                                    lost_values.append(normalize_value(
+                                        lost,
+                                        settings["LOST_MIN"],
+                                        settings["LOST_MAX"]
+                                    ))
 
                                     # Calculate Mbit/s for all_bytes and out_bytes with log_interval
                                     all_bytes = packets.get("all_bytes", [0])[0]
@@ -338,18 +380,44 @@ def listen_to_stream():
                                         rssi_avg = ant_stat.get("rssi_avg", 0)
                                         snr_avg = ant_stat.get("snr_avg", 0)
 
+                                        # Initialize antenna keys if not present
                                         if ant_id not in rssi_values:
                                             rssi_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
                                             colors[ant_id] = get_random_color()
-                                        rssi_values[ant_id].append(normalize_rssi(rssi_avg))
-
                                         if ant_id not in snr_values:
                                             snr_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+
+                                        # NEW: Initialize raw antenna keys if needed
+                                        if ant_id not in raw_rssi_values:
+                                            raw_rssi_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+                                        if ant_id not in raw_snr_values:
+                                            raw_snr_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+
+                                        # Append RAW values
+                                        raw_rssi_values[ant_id].append(rssi_avg)
+                                        raw_snr_values[ant_id].append(snr_avg)
+
+                                        # Append Normalized values
+                                        rssi_values[ant_id].append(normalize_rssi(rssi_avg))
                                         snr_values[ant_id].append(normalize_snr(snr_avg))
 
+                                    # For antennas that didn't appear this round, push a zero
                                     for ant_id in tracked_antennas - current_antenna_set:
                                         rssi_values[ant_id].append(0.0)
                                         snr_values[ant_id].append(0.0)
+                                        # NEW: If we want to store "missing" raw, might append 0.0 as well:
+                                        raw_rssi_values[ant_id].append(0.0)
+                                        raw_snr_values[ant_id].append(0.0)
+
+                                    # Pass latest data to UDPStreamer
+                                    udp_streamer.update_data({
+                                        "redundancy": list(redundancy_values),
+                                        "derivative": list(derivative_values),
+                                        "fec_rec": list(fec_rec_values),
+                                        "lost": list(lost_values),
+                                        "all_mbit": list(all_mbit_values),
+                                        "out_mbit": list(out_mbit_values),
+                                    })
 
                             except json.JSONDecodeError:
                                 continue
@@ -366,6 +434,7 @@ def listen_to_stream():
 def shutdown_signal_handler(signal_number, frame):
     print("Graceful shutdown initiated.")
     shutdown_flag.set()
+    udp_streamer.stop()  # Ensure UDP streaming stops
     sys.exit(0)
 
 
@@ -377,4 +446,3 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000)
     except KeyboardInterrupt:
         print("Server interrupted. Exiting...")
-
