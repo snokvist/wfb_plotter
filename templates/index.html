@@ -276,5 +276,163 @@
 
         setInterval(fetchData, 500);
     </script>
+
+
+<head>
+  <meta charset="utf-8" />
+  <title>Remote Command Control</title>
+  <style>
+    #commandOutput {
+      width: 100%;
+      height: 300px;
+      background-color: #333;
+      color: #eee;
+      font-family: monospace;
+      overflow-y: scroll;
+      white-space: pre-wrap;
+      padding: 8px;
+    }
+    .cmdButton {
+      margin: 4px;
+    }
+  </style>
+</head>
+
+
+<body>
+  <h1>Remote Command Control</h1>
+
+  <!-- Preset command buttons -->
+  <button class="cmdButton" onclick="startCommand('/usr/bin/extcmd_userscript1.sh')">Script 1</button>
+  <button class="cmdButton" onclick="startCommand('/usr/bin/extcmd_userscript2.sh')">Script 2</button>
+  <button class="cmdButton" onclick="startCommand('/usr/bin/extcmd_userscript3.sh')">Script 3</button>
+  <button class="cmdButton" onclick="startCommand('/usr/bin/extcmd_userscript4.sh')">Script 4</button>
+  <button class="cmdButton" onclick="startCommand('/usr/bin/extcmd_userscript5.sh')">Script 5</button>
+  <button class="cmdButton" onclick="startCommand('/usr/bin/extcmd_userscript6.sh')">Script 6</button>
+
+  <hr/>
+
+  <!-- Output area -->
+  <div id="commandOutput"></div>
+
+  <!-- Send input to running command -->
+  <input type="text" id="commandInput" placeholder="Type input..." />
+  <button onclick="sendInput()">Send</button>
+
+  <!-- Special signals -->
+  <button onclick="sendCtrlC()">CTRL+C</button>
+
+  <hr/>
+
+  <p id="statusText">Status: <em>Idle</em></p>
+
+  <script>
+    let eventSource = null;
+    const outputDiv = document.getElementById('commandOutput');
+    const statusText = document.getElementById('statusText');
+    const commandInput = document.getElementById('commandInput');
+
+    function startCommand(command) {
+      // Stop any existing SSE
+      closeSSE();
+
+      fetch('/command/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          outputDiv.textContent = ''; // Clear old output
+          connectSSE();
+          updateStatus();
+        } else {
+          alert("Error starting command: " + data.message);
+        }
+      })
+      .catch(err => alert("Error: " + err));
+    }
+
+    function connectSSE() {
+      eventSource = new EventSource('/command/stream');
+      eventSource.onmessage = (e) => {
+        // Append incoming text
+        outputDiv.textContent += e.data;
+        // Auto-scroll to bottom
+        outputDiv.scrollTop = outputDiv.scrollHeight;
+      };
+      eventSource.onerror = (e) => {
+        console.log("SSE error:", e);
+      };
+    }
+
+    function closeSSE() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    }
+
+    function sendInput() {
+      let text = commandInput.value || '';
+      if (!text) return;
+
+      fetch('/command/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: text })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) {
+          alert("Error: " + data.message);
+        } else {
+          // Optionally clear input
+          commandInput.value = '';
+        }
+      });
+    }
+
+    function sendCtrlC() {
+      fetch('/command/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ctrl_c: true })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) {
+          alert("Error: " + data.message);
+        }
+      });
+    }
+
+    function updateStatus() {
+      fetch('/command/status')
+        .then(res => res.json())
+        .then(info => {
+          if (info.running) {
+            statusText.innerHTML = `Status: <em>Running</em> <strong>${info.cmd} ${info.args.join(' ')}</strong>`;
+            // If an SSE stream isn't open, open it
+            if (!eventSource) {
+              connectSSE();
+            }
+          } else {
+            statusText.innerHTML = `Status: <em>Idle</em> (exit code: ${info.exit_code})`;
+            closeSSE();
+          }
+        });
+    }
+
+    // Refresh status on page load
+    document.addEventListener('DOMContentLoaded', () => {
+      updateStatus();
+    });
+  </script>
+</body>
+
+
+
 </body>
 </html>
