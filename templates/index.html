@@ -33,11 +33,11 @@
         }
 
         .chart-container {
-            width: 100%; /* Make the charts take the full width of the container */
-            max-width: 100%; /* Ensure no horizontal scrolling occurs */
+            width: 100%; /* Charts occupy full width */
+            max-width: 100%; /* Prevent horizontal scrolling */
             margin: 20px 0;
             height: 400px; /* Default height */
-            transition: height 0.3s ease, width 0.3s ease; /* Smooth height and width transitions */
+            transition: height 0.3s ease, width 0.3s ease; /* Smooth transitions */
         }
 
         .slim .chart-container {
@@ -46,8 +46,8 @@
 
         canvas {
             display: block;
-            width: 100%; /* Ensure canvas fills its container */
-            height: 100%; /* Stretch to fit the container */
+            width: 100%; /* Canvas stretches to container width */
+            height: 100%; /* Canvas fills container height */
         }
     </style>
 </head>
@@ -79,6 +79,8 @@
     </div>
 
     <script>
+        let paused = false;
+
         const mbitCtx = document.getElementById('mbitChart').getContext('2d');
         const rssiCtx = document.getElementById('rssiChart').getContext('2d');
         const snrCtx = document.getElementById('snrChart').getContext('2d');
@@ -116,7 +118,7 @@
                 animation: false,
                 elements: { point: { radius: 0 } },
                 scales: {
-                    y: { min: 0, max: 100 },
+                    y: { min: 0, max: 100 }, // Default values, updated dynamically
                 },
                 plugins: { legend: { display: true }, zoom: zoomOptions },
             },
@@ -186,38 +188,21 @@
             },
         });
 
-        const chartContainers = document.querySelectorAll('.chart-container');
-        const allCharts = [mbitChart, rssiChart, snrChart, redundancyChart, derivativeChart];
-        document.getElementById('toggleHeight').addEventListener('click', () => {
-            document.body.classList.toggle('slim');
-            allCharts.forEach(chart => chart.update());
-            document.getElementById('toggleHeight').textContent = document.body.classList.contains('slim') ? 'Normal' : 'Slim';
-        });
-
-        document.getElementById('pause').addEventListener('click', () => {
-            paused = true;
-            document.getElementById('pause').style.display = 'none';
-            document.getElementById('resume').style.display = 'inline';
-        });
-
-        document.getElementById('resume').addEventListener('click', () => {
-            paused = false;
-            document.getElementById('resume').style.display = 'none';
-            document.getElementById('pause').style.display = 'inline';
-        });
-
-        document.getElementById('resetZoom').addEventListener('click', () => {
-            allCharts.forEach(chart => chart.resetZoom());
-        });
-
-        let paused = false;
+        function updateYAxisLimits(chart, min, max) {
+            chart.options.scales.y.min = min;
+            chart.options.scales.y.max = max;
+            chart.update();
+        }
 
         function fetchData() {
             if (paused) return;
             fetch('/data')
                 .then((response) => response.json())
                 .then((data) => {
-                    const { rssi, snr, redundancy, derivative, fec_rec, lost, all_mbit, out_mbit, sample_indices, colors } = data;
+                    const { rssi, snr, redundancy, derivative, fec_rec, lost, all_mbit, out_mbit, sample_indices, colors, settings } = data;
+
+                    // Update Y-axis limits for Mbit/s chart
+                    updateYAxisLimits(mbitChart, settings.MBIT_MIN, settings.MBIT_MAX);
 
                     // Update Mbit/s Chart
                     mbitChart.data.labels = sample_indices;
@@ -259,8 +244,37 @@
             chart.update();
         }
 
+        document.getElementById('toggleHeight').addEventListener('click', () => {
+            document.body.classList.toggle('slim');
+            mbitChart.update();
+            rssiChart.update();
+            snrChart.update();
+            redundancyChart.update();
+            derivativeChart.update();
+            document.getElementById('toggleHeight').textContent = document.body.classList.contains('slim') ? 'Normal' : 'Slim';
+        });
+
+        document.getElementById('pause').addEventListener('click', () => {
+            paused = true;
+            document.getElementById('pause').style.display = 'none';
+            document.getElementById('resume').style.display = 'inline';
+        });
+
+        document.getElementById('resume').addEventListener('click', () => {
+            paused = false;
+            document.getElementById('resume').style.display = 'none';
+            document.getElementById('pause').style.display = 'inline';
+        });
+
+        document.getElementById('resetZoom').addEventListener('click', () => {
+            mbitChart.resetZoom();
+            rssiChart.resetZoom();
+            snrChart.resetZoom();
+            redundancyChart.resetZoom();
+            derivativeChart.resetZoom();
+        });
+
         setInterval(fetchData, 500);
     </script>
 </body>
 </html>
-
