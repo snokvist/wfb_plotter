@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
 import threading
 import socket
 import json
@@ -10,7 +10,10 @@ from collections import deque
 import os
 import sys
 import configparser
-from udp_streamer import UDPStreamer  # Import the external UDP streaming module
+import subprocess
+import queue
+
+from udp_streamer import UDPStreamer  # External module for UDP streaming
 
 # Configuration File
 CONFIG_FILE = "plotter.cfg"
@@ -89,12 +92,11 @@ lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"
 all_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 out_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 colors = {}
-log_interval = None  # Extracted from the "settings" JSON
+log_interval = None  # Extracted from the "settings" JSON type message
 
-# NEW: Raw Data Setup
-# We'll store raw RSSI and SNR per antenna, and raw FEC_REC and LOST globally.
-raw_rssi_values = {}  # raw RSSI by antenna
-raw_snr_values = {}   # raw SNR by antenna
+# Raw Data for rssi/snr/fec_rec/lost
+raw_rssi_values = {}
+raw_snr_values = {}
 raw_fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 raw_lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
@@ -108,11 +110,12 @@ app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), 't
 shutdown_flag = threading.Event()
 restart_flag = threading.Event()
 
-
+#########################################################################
+# EXISTING ROUTES / FUNCTIONALITY
+#########################################################################
 @app.route('/')
 def index():
     return render_template('index.html', settings=settings)
-
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings_page():
@@ -135,7 +138,7 @@ def settings_page():
         with open(CONFIG_FILE, "w") as configfile:
             config.write(configfile)
 
-        # Reset our data structures because MAX_SAMPLES or other settings may have changed
+        # Reset data structures if relevant settings changed
         global sample_indices
         global rssi_values, snr_values
         global redundancy_values, derivative_values, fec_rec_values, lost_values
@@ -152,7 +155,7 @@ def settings_page():
         all_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
         out_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-        # NEW: Reset raw data as well
+        # Reset raw data
         raw_rssi_values = {}
         raw_snr_values = {}
         raw_fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
@@ -166,12 +169,9 @@ def settings_page():
 
     return render_template('settings.html', settings=settings)
 
-
 @app.route('/data')
 def data():
-    """
-    Existing data endpoint - unchanged format
-    """
+    # Existing endpoint (unchanged)
     return jsonify({
         'rssi': {k: list(v) for k, v in rssi_values.items()},
         'snr': {k: list(v) for k, v in snr_values.items()},
@@ -184,16 +184,12 @@ def data():
         'sample_indices': list(sample_indices),
         'colors': colors,
         'settings': settings,
-        'log_interval': log_interval,  # Include log_interval as metadata
+        'log_interval': log_interval,
     })
 
-
-# NEW: Raw Data Endpoint
 @app.route('/data/raw')
 def data_raw():
-    """
-    Expose only raw (unnormalized) RSSI, SNR, FEC_REC, and LOST values.
-    """
+    # New raw data endpoint
     return jsonify({
         'raw_rssi': {antenna: list(values) for antenna, values in raw_rssi_values.items()},
         'raw_snr': {antenna: list(values) for antenna, values in raw_snr_values.items()},
@@ -202,29 +198,19 @@ def data_raw():
         'sample_indices': list(sample_indices),
     })
 
-
 @app.route('/udp-log')
 def udp_log():
-    """
-    Endpoint to retrieve the UDP streamer logs.
-    """
     return jsonify({"logs": udp_streamer.get_logs()})
-
 
 @app.route('/udp-settings', methods=['GET', 'POST'])
 def udp_settings():
-    """
-    Endpoint to configure and control the UDP streamer.
-    """
     if request.method == 'POST':
         udp_ip = request.form.get('UDP_IP', settings['UDP_IP'])
         udp_port = request.form.get('UDP_PORT', settings['UDP_PORT'])
 
-        # Update the settings
         settings['UDP_IP'] = udp_ip
         settings['UDP_PORT'] = int(udp_port)
 
-        # Save updated settings to the configuration file
         config.set("Settings", "UDP_IP", udp_ip)
         config.set("Settings", "UDP_PORT", str(udp_port))
         with open(CONFIG_FILE, "w") as configfile:
@@ -233,7 +219,7 @@ def udp_settings():
         # Update the UDP streamer
         udp_streamer.update_settings(udp_ip, int(udp_port))
 
-        # Handle start/stop commands
+        # Handle start/stop
         if 'start' in request.form:
             udp_streamer.start()
         elif 'stop' in request.form:
@@ -244,6 +230,240 @@ def udp_settings():
     return render_template('udp_settings.html', settings=settings, udp_running=udp_streamer.is_running())
 
 
+#########################################################################
+# REMOTE COMMAND EXECUTION FUNCTIONALITY with robust stopping logic
+#########################################################################
+command_lock = threading.Lock()
+command_process = None  # Will hold subprocess.Popen object if running
+command_output_queue = queue.Queue()
+command_running_info = {
+    "cmd": None,
+    "args": None,
+    "running": False,
+    "exit_code": None,
+}
+
+def read_process_output(proc, output_queue):
+    """
+    Read from proc.stdout until process completes.
+    Put each chunk of data into output_queue.
+    """
+    try:
+        for line in iter(proc.stdout.readline, b''):
+            if not line:
+                break
+            output_queue.put(line)
+    except Exception as e:
+        output_queue.put(f"[ERROR reading output]: {e}\n".encode("utf-8"))
+    finally:
+        # Signal end of stream
+        output_queue.put(b"__CMD_STREAM_END__")
+
+def start_command(command, args=None):
+    """
+    Only allow commands whose basename starts with 'extcmd_'.
+    """
+    global command_process, command_running_info
+
+    with command_lock:
+        if command_running_info["running"]:
+            return False, "Another command is currently running."
+
+        import os
+        cmd_basename = os.path.basename(command)
+        if not cmd_basename.startswith("extcmd_"):
+            return False, f"Not allowed. Command '{cmd_basename}' must begin with 'extcmd_'."
+
+        if args is None:
+            args = []
+
+        while not command_output_queue.empty():
+            command_output_queue.get_nowait()
+
+        full_cmd = [command] + args
+
+        try:
+            command_process = subprocess.Popen(
+                full_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE,
+                bufsize=0
+            )
+        except Exception as e:
+            return False, f"Failed to start command: {e}"
+
+        command_running_info["cmd"] = command
+        command_running_info["args"] = args
+        command_running_info["running"] = True
+        command_running_info["exit_code"] = None
+
+        t = threading.Thread(target=read_process_output, args=(command_process, command_output_queue), daemon=True)
+        t.start()
+
+    return True, f"Command '{full_cmd}' started."
+
+def stop_command(force=False):
+    """
+    Send SIGINT and wait a short time. If still running, send SIGTERM.
+    If force=True, skip straight to SIGTERM.
+    """
+    global command_process, command_running_info
+
+    with command_lock:
+        if not command_running_info["running"]:
+            return False, "No command is running."
+        if command_process is None:
+            return False, "Process reference is missing."
+
+        try:
+            if force:
+                # Immediately send SIGTERM
+                command_process.terminate()
+                return True, "SIGTERM sent (force)."
+            else:
+                # Send SIGINT first
+                command_process.send_signal(signal.SIGINT)
+                time.sleep(0.2)
+                retcode = command_process.poll()
+                if retcode is None:
+                    # Still running => fallback to terminate
+                    command_process.terminate()
+                    return True, "SIGINT sent, then SIGTERM fallback."
+                else:
+                    return True, "SIGINT sent successfully (process exited)."
+        except Exception as e:
+            return False, f"Error stopping command: {e}"
+
+def send_input(data):
+    """
+    Write data to the running process stdin.
+    """
+    global command_process, command_running_info
+    with command_lock:
+        if not command_running_info["running"]:
+            return False, "No command is running to send input."
+        try:
+            if isinstance(data, str):
+                data_bytes = data.encode("utf-8")
+            else:
+                data_bytes = data
+
+            command_process.stdin.write(data_bytes)
+            command_process.stdin.flush()
+        except Exception as e:
+            return False, f"Failed to send data to stdin: {e}"
+    return True, "Data sent."
+
+def check_command_status():
+    """
+    Checks if command has exited. If so, updates running info.
+    """
+    global command_process, command_running_info
+    with command_lock:
+        if not command_running_info["running"] or command_process is None:
+            return
+        retcode = command_process.poll()
+        if retcode is not None:
+            command_running_info["exit_code"] = retcode
+            command_running_info["running"] = False
+            command_process = None
+
+@app.route('/command/start', methods=['POST'])
+def command_start():
+    """
+    JSON/form: { "command": "/usr/bin/extcmd_...", "args": [] }
+    """
+    data = request.json or request.form
+    cmd = data.get("command")
+    args = data.get("args", [])
+
+    if not cmd:
+        return jsonify({"success": False, "message": "No command specified."}), 400
+
+    ok, msg = start_command(cmd, args)
+    return jsonify({"success": ok, "message": msg})
+
+@app.route('/command/stop', methods=['POST'])
+def command_stop():
+    """
+    POST /command/stop?force=1 to do a SIGTERM directly
+    Otherwise SIGINT -> (0.2s) -> SIGTERM fallback
+    """
+    check_command_status()
+    force_str = request.args.get("force", "0")
+    force_val = (force_str == "1")
+
+    ok, msg = stop_command(force=force_val)
+    return jsonify({"success": ok, "message": msg})
+
+@app.route('/command/input', methods=['POST'])
+def command_input():
+    """
+    { "input": "some text" } or { "ctrl_c": true }.
+    """
+    check_command_status()
+    data = request.json or request.form
+    if data.get("ctrl_c", False):
+        # Equivalent to a normal stop_command() with no force
+        ok, msg = stop_command(force=False)
+        return jsonify({"success": ok, "message": msg})
+    else:
+        text = data.get("input", "")
+        ok, msg = send_input(text + "\n")
+        return jsonify({"success": ok, "message": msg})
+
+@app.route('/command/status', methods=['GET'])
+def command_status():
+    """
+    Returns JSON with { cmd, args, running, exit_code }
+    """
+    check_command_status()
+    with command_lock:
+        return jsonify(command_running_info)
+
+@app.route('/command/stream', methods=['GET'])
+def command_stream():
+    """
+    SSE endpoint for real-time stdout streaming.
+    Breaks out on __CMD_STREAM_END__ or once process finishes.
+    """
+    check_command_status()
+
+    def event_stream():
+        process_finished_msg_sent = False
+        while True:
+            # Check if process ended
+            check_command_status()
+            if not command_running_info["running"]:
+                # The process is done, but we may still have leftover output lines
+                break
+
+            try:
+                line = command_output_queue.get(timeout=0.5)
+                if line == b"__CMD_STREAM_END__":
+                    # End of stream -> break
+                    break
+                yield f"data: {line.decode('utf-8', errors='replace')}\n\n"
+            except queue.Empty:
+                continue
+
+        # After we exit the loop, flush any leftover lines.
+        while not command_output_queue.empty():
+            line = command_output_queue.get()
+            if line == b"__CMD_STREAM_END__":
+                continue
+            yield f"data: {line.decode('utf-8', errors='replace')}\n\n"
+
+        if not process_finished_msg_sent:
+            yield "data: [Process finished]\n\n"
+
+    return Response(event_stream(), mimetype="text/event-stream")
+
+
+#########################################################################
+# BACKGROUND JSON STREAM READER (EXISTING FUNCTIONALITY)
+#########################################################################
 def compute_derivative():
     window = settings["DERIVATIVE_WINDOW"]
     if len(redundancy_values) >= window:
@@ -251,7 +471,6 @@ def compute_derivative():
         previous = redundancy_values[-window]
         return (latest - previous) / window
     return 0
-
 
 def normalize_value(value, min_val, max_val):
     if value <= min_val:
@@ -261,14 +480,11 @@ def normalize_value(value, min_val, max_val):
     else:
         return (value - min_val) / (max_val - min_val)
 
-
 def normalize_rssi(rssi):
     return normalize_value(rssi, settings["RSSI_MIN"], settings["RSSI_MAX"])
 
-
 def normalize_snr(snr):
     return normalize_value(snr, settings["SNR_MIN"], settings["SNR_MAX"])
-
 
 def parse_ant_field(ant_value):
     if ant_value is None:
@@ -282,17 +498,14 @@ def parse_ant_field(ant_value):
     except Exception:
         return str(ant_value)
 
-
 def get_random_color():
     import random
     return f"hsl({random.randint(0, 360)}, 70%, 50%)"
-
 
 def listen_to_stream():
     global rssi_values, snr_values
     global redundancy_values, derivative_values, fec_rec_values, lost_values
     global all_mbit_values, out_mbit_values, colors, log_interval
-    # NEW: Also reference raw data globals
     global raw_rssi_values, raw_snr_values, raw_fec_rec_values, raw_lost_values
 
     while not shutdown_flag.is_set():
@@ -332,35 +545,31 @@ def listen_to_stream():
                                     packets = obj.get("packets", {})
                                     rx_ant_stats = obj.get("rx_ant_stats", [])
 
-                                    # Redundancy calculation
+                                    # Redundancy
                                     all_value = packets.get("all", [0])[0]
                                     out_value = packets.get("out", [1])[0]
                                     redundancy = all_value / out_value if out_value > 0 else 0
                                     redundancy_values.append(redundancy)
 
-                                    # Compute and append derivative
+                                    # Derivative
                                     derivative = compute_derivative()
                                     derivative_values.append(derivative)
 
                                     # RAW + Normalized FEC_REC
                                     fec_rec = packets.get("fec_rec", [0])[0]
-                                    raw_fec_rec_values.append(fec_rec)  # NEW: store raw value
+                                    raw_fec_rec_values.append(fec_rec)
                                     fec_rec_values.append(normalize_value(
-                                        fec_rec,
-                                        settings["FEC_REC_MIN"],
-                                        settings["FEC_REC_MAX"]
+                                        fec_rec, settings["FEC_REC_MIN"], settings["FEC_REC_MAX"]
                                     ))
 
                                     # RAW + Normalized LOST
                                     lost = packets.get("lost", [0])[0]
-                                    raw_lost_values.append(lost)  # NEW: store raw value
+                                    raw_lost_values.append(lost)
                                     lost_values.append(normalize_value(
-                                        lost,
-                                        settings["LOST_MIN"],
-                                        settings["LOST_MAX"]
+                                        lost, settings["LOST_MIN"], settings["LOST_MAX"]
                                     ))
 
-                                    # Calculate Mbit/s for all_bytes and out_bytes with log_interval
+                                    # Mbit/s
                                     all_bytes = packets.get("all_bytes", [0])[0]
                                     out_bytes = packets.get("out_bytes", [0])[0]
                                     if log_interval and log_interval > 0:
@@ -377,39 +586,39 @@ def listen_to_stream():
                                         ant_id = parse_ant_field(ant_stat.get("ant"))
                                         current_antenna_set.add(ant_id)
                                         tracked_antennas.add(ant_id)
+
                                         rssi_avg = ant_stat.get("rssi_avg", 0)
                                         snr_avg = ant_stat.get("snr_avg", 0)
 
-                                        # Initialize antenna keys if not present
+                                        # Initialize if not present
                                         if ant_id not in rssi_values:
                                             rssi_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
                                             colors[ant_id] = get_random_color()
                                         if ant_id not in snr_values:
                                             snr_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-                                        # NEW: Initialize raw antenna keys if needed
+                                        # Initialize raw if needed
                                         if ant_id not in raw_rssi_values:
-                                            raw_rssi_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+                                            raw_rssi_values[ant_id] = deque([0.0]*settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
                                         if ant_id not in raw_snr_values:
-                                            raw_snr_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
+                                            raw_snr_values[ant_id] = deque([0.0]*settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-                                        # Append RAW values
+                                        # RAW
                                         raw_rssi_values[ant_id].append(rssi_avg)
                                         raw_snr_values[ant_id].append(snr_avg)
 
-                                        # Append Normalized values
+                                        # Normalized
                                         rssi_values[ant_id].append(normalize_rssi(rssi_avg))
                                         snr_values[ant_id].append(normalize_snr(snr_avg))
 
-                                    # For antennas that didn't appear this round, push a zero
+                                    # For antennas not reported this cycle, append 0
                                     for ant_id in tracked_antennas - current_antenna_set:
                                         rssi_values[ant_id].append(0.0)
                                         snr_values[ant_id].append(0.0)
-                                        # NEW: If we want to store "missing" raw, might append 0.0 as well:
                                         raw_rssi_values[ant_id].append(0.0)
                                         raw_snr_values[ant_id].append(0.0)
 
-                                    # Pass latest data to UDPStreamer
+                                    # Update UDP data
                                     udp_streamer.update_data({
                                         "redundancy": list(redundancy_values),
                                         "derivative": list(derivative_values),
@@ -430,19 +639,27 @@ def listen_to_stream():
             print(f"Error connecting to JSON server: {e}. Retrying in 3 seconds...")
             time.sleep(3)
 
-
 def shutdown_signal_handler(signal_number, frame):
     print("Graceful shutdown initiated.")
     shutdown_flag.set()
-    udp_streamer.stop()  # Ensure UDP streaming stops
+    udp_streamer.stop()  # Stop UDP streaming
+    # Attempt to stop any running command
+    with command_lock:
+        if command_process and command_running_info["running"]:
+            try:
+                command_process.send_signal(signal.SIGINT)
+                time.sleep(0.1)
+                if command_process.poll() is None:
+                    command_process.terminate()
+            except:
+                pass
     sys.exit(0)
-
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, shutdown_signal_handler)
     signal.signal(signal.SIGTERM, shutdown_signal_handler)
     threading.Thread(target=listen_to_stream, daemon=True).start()
     try:
-        app.run(host='0.0.0.0', port=5000)
+        app.run(host='0.0.0.0', port=5000, threaded=True)
     except KeyboardInterrupt:
         print("Server interrupted. Exiting...")
