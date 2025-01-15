@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response, send_from_directory
 import threading
 import socket
 import json
@@ -43,7 +43,8 @@ DEFAULT_CONFIG = {
         "MBIT_MIN": "0",
         "MBIT_MAX": "100",
         "UDP_IP": "127.0.0.1",
-        "UDP_PORT": "5005"
+        "UDP_PORT": "5005",
+        "FILE_SERVE_DIR": "/tmp"   # NEW: Default directory for file serving
     }
 }
 
@@ -79,12 +80,20 @@ settings = {
     "MBIT_MAX": float(config.get("Settings", "MBIT_MAX")),
     "UDP_IP": config.get("Settings", "UDP_IP"),
     "UDP_PORT": int(config.get("Settings", "UDP_PORT")),
+    "FILE_SERVE_DIR": config.get("Settings", "FILE_SERVE_DIR"),  # NEW
 }
+
+# Validate/ensure FILE_SERVE_DIR exists or create it
+if not os.path.isdir(settings["FILE_SERVE_DIR"]):
+    try:
+        os.makedirs(settings["FILE_SERVE_DIR"], exist_ok=True)
+    except Exception as e:
+        print(f"Warning: failed to create directory {settings['FILE_SERVE_DIR']}: {e}")
 
 # Shared Data for Visualizations
 sample_indices = deque(range(settings["MAX_SAMPLES"]), maxlen=settings["MAX_SAMPLES"])
-rssi_values = {}  # normalized RSSI by antenna
-snr_values = {}   # normalized SNR by antenna
+rssi_values = {}
+snr_values = {}
 redundancy_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 derivative_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
@@ -92,7 +101,7 @@ lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"
 all_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 out_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 colors = {}
-log_interval = None  # Extracted from the "settings" JSON type message
+log_interval = None
 
 # Raw Data for rssi/snr/fec_rec/lost
 raw_rssi_values = {}
@@ -111,7 +120,7 @@ shutdown_flag = threading.Event()
 restart_flag = threading.Event()
 
 #########################################################################
-# EXISTING ROUTES / FUNCTIONALITY
+#  FRONTEND: HOME / SETTINGS / DATA ROUTES (EXISTING)
 #########################################################################
 @app.route('/')
 def index():
@@ -138,7 +147,6 @@ def settings_page():
         with open(CONFIG_FILE, "w") as configfile:
             config.write(configfile)
 
-        # Reset data structures if relevant settings changed
         global sample_indices
         global rssi_values, snr_values
         global redundancy_values, derivative_values, fec_rec_values, lost_values
@@ -155,13 +163,19 @@ def settings_page():
         all_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
         out_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-        # Reset raw data
         raw_rssi_values = {}
         raw_snr_values = {}
         raw_fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
         raw_lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-        # Update UDP Streamer settings
+        # Re-check the file serve dir
+        if not os.path.isdir(settings["FILE_SERVE_DIR"]):
+            try:
+                os.makedirs(settings["FILE_SERVE_DIR"], exist_ok=True)
+            except Exception as e:
+                print(f"Warning: failed to create directory {settings['FILE_SERVE_DIR']}: {e}")
+
+        # Update UDP Streamer
         udp_streamer.update_settings(settings["UDP_IP"], settings["UDP_PORT"])
 
         restart_flag.set()
@@ -171,7 +185,6 @@ def settings_page():
 
 @app.route('/data')
 def data():
-    # Existing endpoint (unchanged)
     return jsonify({
         'rssi': {k: list(v) for k, v in rssi_values.items()},
         'snr': {k: list(v) for k, v in snr_values.items()},
@@ -189,7 +202,6 @@ def data():
 
 @app.route('/data/raw')
 def data_raw():
-    # New raw data endpoint
     return jsonify({
         'raw_rssi': {antenna: list(values) for antenna, values in raw_rssi_values.items()},
         'raw_snr': {antenna: list(values) for antenna, values in raw_snr_values.items()},
@@ -216,10 +228,8 @@ def udp_settings():
         with open(CONFIG_FILE, "w") as configfile:
             config.write(configfile)
 
-        # Update the UDP streamer
         udp_streamer.update_settings(udp_ip, int(udp_port))
 
-        # Handle start/stop
         if 'start' in request.form:
             udp_streamer.start()
         elif 'stop' in request.form:
@@ -231,10 +241,10 @@ def udp_settings():
 
 
 #########################################################################
-# REMOTE COMMAND EXECUTION FUNCTIONALITY with robust stopping logic
+# REMOTE COMMAND EXECUTION FUNCTIONALITY (UNMODIFIED FROM PREVIOUS)
 #########################################################################
 command_lock = threading.Lock()
-command_process = None  # Will hold subprocess.Popen object if running
+command_process = None
 command_output_queue = queue.Queue()
 command_running_info = {
     "cmd": None,
@@ -244,10 +254,6 @@ command_running_info = {
 }
 
 def read_process_output(proc, output_queue):
-    """
-    Read from proc.stdout until process completes.
-    Put each chunk of data into output_queue.
-    """
     try:
         for line in iter(proc.stdout.readline, b''):
             if not line:
@@ -256,13 +262,9 @@ def read_process_output(proc, output_queue):
     except Exception as e:
         output_queue.put(f"[ERROR reading output]: {e}\n".encode("utf-8"))
     finally:
-        # Signal end of stream
         output_queue.put(b"__CMD_STREAM_END__")
 
 def start_command(command, args=None):
-    """
-    Only allow commands whose basename starts with 'extcmd_'.
-    """
     global command_process, command_running_info
 
     with command_lock:
@@ -304,10 +306,6 @@ def start_command(command, args=None):
     return True, f"Command '{full_cmd}' started."
 
 def stop_command(force=False):
-    """
-    Send SIGINT and wait a short time. If still running, send SIGTERM.
-    If force=True, skip straight to SIGTERM.
-    """
     global command_process, command_running_info
 
     with command_lock:
@@ -318,16 +316,13 @@ def stop_command(force=False):
 
         try:
             if force:
-                # Immediately send SIGTERM
                 command_process.terminate()
                 return True, "SIGTERM sent (force)."
             else:
-                # Send SIGINT first
                 command_process.send_signal(signal.SIGINT)
                 time.sleep(0.2)
                 retcode = command_process.poll()
                 if retcode is None:
-                    # Still running => fallback to terminate
                     command_process.terminate()
                     return True, "SIGINT sent, then SIGTERM fallback."
                 else:
@@ -336,9 +331,6 @@ def stop_command(force=False):
             return False, f"Error stopping command: {e}"
 
 def send_input(data):
-    """
-    Write data to the running process stdin.
-    """
     global command_process, command_running_info
     with command_lock:
         if not command_running_info["running"]:
@@ -348,7 +340,6 @@ def send_input(data):
                 data_bytes = data.encode("utf-8")
             else:
                 data_bytes = data
-
             command_process.stdin.write(data_bytes)
             command_process.stdin.flush()
         except Exception as e:
@@ -356,9 +347,6 @@ def send_input(data):
     return True, "Data sent."
 
 def check_command_status():
-    """
-    Checks if command has exited. If so, updates running info.
-    """
     global command_process, command_running_info
     with command_lock:
         if not command_running_info["running"] or command_process is None:
@@ -371,9 +359,6 @@ def check_command_status():
 
 @app.route('/command/start', methods=['POST'])
 def command_start():
-    """
-    JSON/form: { "command": "/usr/bin/extcmd_...", "args": [] }
-    """
     data = request.json or request.form
     cmd = data.get("command")
     args = data.get("args", [])
@@ -386,10 +371,6 @@ def command_start():
 
 @app.route('/command/stop', methods=['POST'])
 def command_stop():
-    """
-    POST /command/stop?force=1 to do a SIGTERM directly
-    Otherwise SIGINT -> (0.2s) -> SIGTERM fallback
-    """
     check_command_status()
     force_str = request.args.get("force", "0")
     force_val = (force_str == "1")
@@ -399,13 +380,9 @@ def command_stop():
 
 @app.route('/command/input', methods=['POST'])
 def command_input():
-    """
-    { "input": "some text" } or { "ctrl_c": true }.
-    """
     check_command_status()
     data = request.json or request.form
     if data.get("ctrl_c", False):
-        # Equivalent to a normal stop_command() with no force
         ok, msg = stop_command(force=False)
         return jsonify({"success": ok, "message": msg})
     else:
@@ -415,40 +392,29 @@ def command_input():
 
 @app.route('/command/status', methods=['GET'])
 def command_status():
-    """
-    Returns JSON with { cmd, args, running, exit_code }
-    """
     check_command_status()
     with command_lock:
         return jsonify(command_running_info)
 
 @app.route('/command/stream', methods=['GET'])
 def command_stream():
-    """
-    SSE endpoint for real-time stdout streaming.
-    Breaks out on __CMD_STREAM_END__ or once process finishes.
-    """
     check_command_status()
 
     def event_stream():
         process_finished_msg_sent = False
         while True:
-            # Check if process ended
             check_command_status()
             if not command_running_info["running"]:
-                # The process is done, but we may still have leftover output lines
                 break
-
             try:
                 line = command_output_queue.get(timeout=0.5)
                 if line == b"__CMD_STREAM_END__":
-                    # End of stream -> break
                     break
                 yield f"data: {line.decode('utf-8', errors='replace')}\n\n"
             except queue.Empty:
                 continue
 
-        # After we exit the loop, flush any leftover lines.
+        # After loop, flush leftover lines
         while not command_output_queue.empty():
             line = command_output_queue.get()
             if line == b"__CMD_STREAM_END__":
@@ -462,7 +428,80 @@ def command_stream():
 
 
 #########################################################################
-# BACKGROUND JSON STREAM READER (EXISTING FUNCTIONALITY)
+#  NEW: FILE-SERVING FUNCTIONALITY
+#########################################################################
+
+def safe_join_file(base_dir, filename):
+    """
+    Prevent directory traversal by checking that the final resolved path
+    is still within the base_dir.
+    """
+    import os
+    full_path = os.path.join(base_dir, filename)
+    normalized_base = os.path.abspath(base_dir)
+    normalized_full = os.path.abspath(full_path)
+    if not normalized_full.startswith(normalized_base + os.sep) and normalized_full != normalized_base:
+        raise ValueError("File path outside of allowed directory.")
+    return normalized_full
+
+@app.route('/files', methods=['GET'])
+def list_files():
+    """
+    Returns a JSON list of files in FILE_SERVE_DIR, along with size & mtime.
+    """
+    directory = settings['FILE_SERVE_DIR']
+    try:
+        files_list = []
+        for entry in os.scandir(directory):
+            if entry.is_file():
+                stat_info = entry.stat()
+                files_list.append({
+                    "name": entry.name,
+                    "size": stat_info.st_size,
+                    "modified": time.ctime(stat_info.st_mtime),
+                })
+        return jsonify({"directory": directory, "files": files_list})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/files/download/<path:filename>', methods=['GET'])
+def download_file(filename):
+    """
+    Download a file from FILE_SERVE_DIR by name.
+    """
+    directory = settings['FILE_SERVE_DIR']
+    try:
+        full_path = safe_join_file(directory, filename)
+        if not os.path.isfile(full_path):
+            return jsonify({"error": "File not found"}), 404
+
+        return send_from_directory(directory, filename, as_attachment=True)
+    except ValueError:
+        # Path outside directory
+        return jsonify({"error": "Invalid file path"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/files/delete/<path:filename>', methods=['POST'])
+def delete_file(filename):
+    """
+    Delete a file from FILE_SERVE_DIR.
+    """
+    directory = settings['FILE_SERVE_DIR']
+    try:
+        full_path = safe_join_file(directory, filename)
+        if not os.path.isfile(full_path):
+            return jsonify({"error": "File not found"}), 404
+        os.remove(full_path)
+        return jsonify({"success": True, "message": f"File '{filename}' deleted."})
+    except ValueError:
+        return jsonify({"error": "Invalid file path"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+#########################################################################
+# BACKGROUND JSON STREAM READER (UNCHANGED)
 #########################################################################
 def compute_derivative():
     window = settings["DERIVATIVE_WINDOW"]
@@ -590,14 +629,12 @@ def listen_to_stream():
                                         rssi_avg = ant_stat.get("rssi_avg", 0)
                                         snr_avg = ant_stat.get("snr_avg", 0)
 
-                                        # Initialize if not present
                                         if ant_id not in rssi_values:
                                             rssi_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
                                             colors[ant_id] = get_random_color()
                                         if ant_id not in snr_values:
                                             snr_values[ant_id] = deque([0.0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-                                        # Initialize raw if needed
                                         if ant_id not in raw_rssi_values:
                                             raw_rssi_values[ant_id] = deque([0.0]*settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
                                         if ant_id not in raw_snr_values:
@@ -611,14 +648,14 @@ def listen_to_stream():
                                         rssi_values[ant_id].append(normalize_rssi(rssi_avg))
                                         snr_values[ant_id].append(normalize_snr(snr_avg))
 
-                                    # For antennas not reported this cycle, append 0
+                                    # For antennas not reported
                                     for ant_id in tracked_antennas - current_antenna_set:
                                         rssi_values[ant_id].append(0.0)
                                         snr_values[ant_id].append(0.0)
                                         raw_rssi_values[ant_id].append(0.0)
                                         raw_snr_values[ant_id].append(0.0)
 
-                                    # Update UDP data
+                                    # Update UDP
                                     udp_streamer.update_data({
                                         "redundancy": list(redundancy_values),
                                         "derivative": list(derivative_values),
@@ -642,8 +679,8 @@ def listen_to_stream():
 def shutdown_signal_handler(signal_number, frame):
     print("Graceful shutdown initiated.")
     shutdown_flag.set()
-    udp_streamer.stop()  # Stop UDP streaming
-    # Attempt to stop any running command
+    udp_streamer.stop()
+    # Attempt to stop running command
     with command_lock:
         if command_process and command_running_info["running"]:
             try:
