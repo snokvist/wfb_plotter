@@ -279,5 +279,176 @@
 
 
 
+    <head>
+  <meta charset="utf-8"/>
+  <title>File Browser</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    h1 {
+      margin-bottom: 0.5rem;
+    }
+    #filesContainer {
+      margin-top: 1rem;
+    }
+    table {
+      border-collapse: collapse;
+      width: 80%;
+      max-width: 800px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 8px 12px;
+      text-align: left;
+    }
+    th {
+      background-color: #f0f0f0;
+    }
+    button {
+      margin: 2px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    #refreshBtn {
+      margin-bottom: 1rem;
+    }
+    #statusMessage {
+      color: #444;
+      margin-top: 1rem;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <h1>File Browser</h1>
+  <p>Manage files in the configured directory on the server.</p>
+
+  <button id="refreshBtn">Refresh File List</button>
+
+  <div id="filesContainer">
+    <!-- File table or message will be inserted here by JavaScript -->
+  </div>
+
+  <div id="statusMessage"></div>
+
+  <script>
+    const filesContainer = document.getElementById('filesContainer');
+    const statusMessage = document.getElementById('statusMessage');
+    const refreshBtn = document.getElementById('refreshBtn');
+
+    refreshBtn.addEventListener('click', () => {
+      loadFiles();
+    });
+
+    // Load file list from the server
+    function loadFiles() {
+      statusMessage.textContent = "Loading files...";
+      fetch('/files')
+        .then(response => response.json())
+        .then(data => {
+          if (data.error) {
+            filesContainer.innerHTML = `<p style="color:red;">Error: ${data.error}</p>`;
+            statusMessage.textContent = "";
+            return;
+          }
+
+          renderFiles(data.directory, data.files);
+          statusMessage.textContent = "";
+        })
+        .catch(err => {
+          filesContainer.innerHTML = `<p style="color:red;">Error fetching file list: ${err}</p>`;
+          statusMessage.textContent = "";
+        });
+    }
+
+    // Build the table of files
+    function renderFiles(directory, files) {
+      if (!files || files.length === 0) {
+        filesContainer.innerHTML = `<p>No files found in <strong>${directory}</strong></p>`;
+        return;
+      }
+
+      let html = `
+        <p>Listing files in <strong>${directory}</strong>:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>File Name</th>
+              <th>Size (bytes)</th>
+              <th>Last Modified</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      for (const file of files) {
+        const encodedName = encodeURIComponent(file.name);
+        html += `
+          <tr>
+            <td>${file.name}</td>
+            <td>${file.size}</td>
+            <td>${file.modified}</td>
+            <td>
+              <button onclick="downloadFile('${encodedName}')">Download</button>
+              <button onclick="deleteFile('${encodedName}')">Delete</button>
+            </td>
+          </tr>
+        `;
+      }
+
+      html += `
+          </tbody>
+        </table>
+      `;
+
+      filesContainer.innerHTML = html;
+    }
+
+    // Download a file (opens browser download)
+    function downloadFile(encodedName) {
+      // We can simply open the /files/download/... URL in a new browser tab
+      // or force the browser to download by using an <a> click trick:
+      const url = '/files/download/' + encodedName;
+      window.open(url, '_blank');
+    }
+
+    // Delete a file from the server
+    function deleteFile(encodedName) {
+      if (!confirm('Are you sure you want to delete this file?')) {
+        return;
+      }
+      statusMessage.textContent = "Deleting file...";
+
+      fetch('/files/delete/' + encodedName, { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          if (data.error) {
+            alert('Error: ' + data.error);
+          } else if (data.success) {
+            alert(data.message || "File deleted.");
+          }
+          // Refresh list
+          loadFiles();
+        })
+        .catch(err => {
+          alert("Error deleting file: " + err);
+        })
+        .finally(() => {
+          statusMessage.textContent = "";
+        });
+    }
+
+    // Auto-load files on page load
+    document.addEventListener('DOMContentLoaded', loadFiles);
+  </script>
+</body>
+
+
+
 </body>
 </html>
