@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, Response, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, Response, send_from_directory
 import threading
 import socket
 import json
@@ -44,7 +44,13 @@ DEFAULT_CONFIG = {
         "MBIT_MAX": "100",
         "UDP_IP": "127.0.0.1",
         "UDP_PORT": "5005",
-        "FILE_SERVE_DIR": "/tmp"   # NEW: Default directory for file serving
+        "FILE_SERVE_DIR": "/tmp"
+    },
+    # NEW: a section for whitelists
+    "Whitelists": {
+        # Comma-separated list of file paths where uploads are allowed.
+        # For example: "/usr/sbin/wfb-ng.sh, /etc/wifibroadcast, /etc/gs.key"
+        "ALLOWED_UPLOAD_PATHS": "/usr/sbin/wfb-ng.sh,/etc/wifibroadcast,/etc/gs.key"
     }
 }
 
@@ -57,7 +63,7 @@ else:
     with open(CONFIG_FILE, "w") as configfile:
         config.write(configfile)
 
-# Current Settings
+# Parse settings from config
 settings = {
     "JSON_STREAM_HOST": config.get("Network", "JSON_STREAM_HOST"),
     "JSON_STREAM_PORT": int(config.get("Network", "JSON_STREAM_PORT")),
@@ -80,10 +86,14 @@ settings = {
     "MBIT_MAX": float(config.get("Settings", "MBIT_MAX")),
     "UDP_IP": config.get("Settings", "UDP_IP"),
     "UDP_PORT": int(config.get("Settings", "UDP_PORT")),
-    "FILE_SERVE_DIR": config.get("Settings", "FILE_SERVE_DIR"),  # NEW
+    "FILE_SERVE_DIR": config.get("Settings", "FILE_SERVE_DIR"),
 }
 
-# Validate/ensure FILE_SERVE_DIR exists or create it
+# NEW: parse the whitelisted paths for upload
+whitelist_raw = config.get("Whitelists", "ALLOWED_UPLOAD_PATHS", fallback="")
+ALLOWED_UPLOAD_PATHS = [p.strip() for p in whitelist_raw.split(',') if p.strip()]
+
+# Ensure FILE_SERVE_DIR exists or create it
 if not os.path.isdir(settings["FILE_SERVE_DIR"]):
     try:
         os.makedirs(settings["FILE_SERVE_DIR"], exist_ok=True)
@@ -101,26 +111,56 @@ lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"
 all_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 out_mbit_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 colors = {}
-log_interval = None
+log_interval = None  # Updated from "settings" messages
 
-# Raw Data for rssi/snr/fec_rec/lost
+# Raw Data
 raw_rssi_values = {}
 raw_snr_values = {}
 raw_fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 raw_lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-# UDP Streamer Instance
+# UDP Streamer
 udp_streamer = UDPStreamer(settings["UDP_IP"], settings["UDP_PORT"])
 
 # Flask App
 app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), 'templates'))
 
-# Graceful Shutdown and Restart Flags
 shutdown_flag = threading.Event()
 restart_flag = threading.Event()
 
+
+@app.route('/viewer')
+def viewer_page():
+    return render_template('viewer.html')
+
+
+@app.route('/save')
+def save_data():
+    filename = "/tmp/data.json"
+    try:
+        with open(filename, 'w') as f:
+            json.dump({
+                'rssi': {k: list(v) for k, v in rssi_values.items()},
+                'snr': {k: list(v) for k, v in snr_values.items()},
+                'redundancy': list(redundancy_values),
+                'derivative': list(derivative_values),
+                'fec_rec': list(fec_rec_values),
+                'lost': list(lost_values),
+                'all_mbit': list(all_mbit_values),
+                'out_mbit': list(out_mbit_values),
+                'sample_indices': list(sample_indices),
+                'colors': colors,
+                'settings': settings,
+                'log_interval': log_interval,  # Include log_interval as metadata
+            }, f, indent=4)
+        return send_file(filename, as_attachment=True)
+    except Exception as e:
+        print(f"Error saving data to file: {e}")
+        return "An error occurred while saving the file. Please try again later.", 500
+
+
 #########################################################################
-#  FRONTEND: HOME / SETTINGS / DATA ROUTES (EXISTING)
+#  HOME / SETTINGS / DATA ROUTES (EXISTING)
 #########################################################################
 @app.route('/')
 def index():
@@ -168,14 +208,19 @@ def settings_page():
         raw_fec_rec_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
         raw_lost_values = deque([0] * settings["MAX_SAMPLES"], maxlen=settings["MAX_SAMPLES"])
 
-        # Re-check the file serve dir
+        # Re-check file serve dir
         if not os.path.isdir(settings["FILE_SERVE_DIR"]):
             try:
                 os.makedirs(settings["FILE_SERVE_DIR"], exist_ok=True)
             except Exception as e:
                 print(f"Warning: failed to create directory {settings['FILE_SERVE_DIR']}: {e}")
 
-        # Update UDP Streamer
+        # Possibly re-parse ALLOWED_UPLOAD_PATHS if user changed it in the config
+        global ALLOWED_UPLOAD_PATHS
+        whitelist_raw_again = config.get("Whitelists", "ALLOWED_UPLOAD_PATHS", fallback="")
+        ALLOWED_UPLOAD_PATHS = [p.strip() for p in whitelist_raw_again.split(',') if p.strip()]
+
+        # Update UDP
         udp_streamer.update_settings(settings["UDP_IP"], settings["UDP_PORT"])
 
         restart_flag.set()
@@ -241,7 +286,7 @@ def udp_settings():
 
 
 #########################################################################
-# REMOTE COMMAND EXECUTION FUNCTIONALITY (UNMODIFIED FROM PREVIOUS)
+#  REMOTE COMMAND EXECUTION (UNCHANGED)
 #########################################################################
 command_lock = threading.Lock()
 command_process = None
@@ -265,8 +310,6 @@ def read_process_output(proc, output_queue):
         output_queue.put(b"__CMD_STREAM_END__")
 
 def start_command(command, args=None):
-    global command_process, command_running_info
-
     with command_lock:
         if command_running_info["running"]:
             return False, "Another command is currently running."
@@ -285,7 +328,7 @@ def start_command(command, args=None):
         full_cmd = [command] + args
 
         try:
-            command_process = subprocess.Popen(
+            proc = subprocess.Popen(
                 full_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -300,18 +343,19 @@ def start_command(command, args=None):
         command_running_info["running"] = True
         command_running_info["exit_code"] = None
 
+        global command_process
+        command_process = proc
+
         t = threading.Thread(target=read_process_output, args=(command_process, command_output_queue), daemon=True)
         t.start()
 
     return True, f"Command '{full_cmd}' started."
 
 def stop_command(force=False):
-    global command_process, command_running_info
-
     with command_lock:
         if not command_running_info["running"]:
             return False, "No command is running."
-        if command_process is None:
+        if not command_process:
             return False, "Process reference is missing."
 
         try:
@@ -331,7 +375,6 @@ def stop_command(force=False):
             return False, f"Error stopping command: {e}"
 
 def send_input(data):
-    global command_process, command_running_info
     with command_lock:
         if not command_running_info["running"]:
             return False, "No command is running to send input."
@@ -347,15 +390,13 @@ def send_input(data):
     return True, "Data sent."
 
 def check_command_status():
-    global command_process, command_running_info
     with command_lock:
-        if not command_running_info["running"] or command_process is None:
+        if not command_running_info["running"] or not command_process:
             return
         retcode = command_process.poll()
         if retcode is not None:
             command_running_info["exit_code"] = retcode
             command_running_info["running"] = False
-            command_process = None
 
 @app.route('/command/start', methods=['POST'])
 def command_start():
@@ -414,7 +455,6 @@ def command_stream():
             except queue.Empty:
                 continue
 
-        # After loop, flush leftover lines
         while not command_output_queue.empty():
             line = command_output_queue.get()
             if line == b"__CMD_STREAM_END__":
@@ -428,15 +468,13 @@ def command_stream():
 
 
 #########################################################################
-#  NEW: FILE-SERVING FUNCTIONALITY
+#  FILE SERVING + NEW FILE UPLOAD FUNCTION
 #########################################################################
 
 def safe_join_file(base_dir, filename):
     """
-    Prevent directory traversal by checking that the final resolved path
-    is still within the base_dir.
+    Ensure final path is inside the base_dir (prevents directory traversal).
     """
-    import os
     full_path = os.path.join(base_dir, filename)
     normalized_base = os.path.abspath(base_dir)
     normalized_full = os.path.abspath(full_path)
@@ -446,9 +484,6 @@ def safe_join_file(base_dir, filename):
 
 @app.route('/files', methods=['GET'])
 def list_files():
-    """
-    Returns a JSON list of files in FILE_SERVE_DIR, along with size & mtime.
-    """
     directory = settings['FILE_SERVE_DIR']
     try:
         files_list = []
@@ -466,9 +501,6 @@ def list_files():
 
 @app.route('/files/download/<path:filename>', methods=['GET'])
 def download_file(filename):
-    """
-    Download a file from FILE_SERVE_DIR by name.
-    """
     directory = settings['FILE_SERVE_DIR']
     try:
         full_path = safe_join_file(directory, filename)
@@ -477,16 +509,12 @@ def download_file(filename):
 
         return send_from_directory(directory, filename, as_attachment=True)
     except ValueError:
-        # Path outside directory
         return jsonify({"error": "Invalid file path"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/files/delete/<path:filename>', methods=['POST'])
 def delete_file(filename):
-    """
-    Delete a file from FILE_SERVE_DIR.
-    """
     directory = settings['FILE_SERVE_DIR']
     try:
         full_path = safe_join_file(directory, filename)
@@ -501,7 +529,56 @@ def delete_file(filename):
 
 
 #########################################################################
-# BACKGROUND JSON STREAM READER (UNCHANGED)
+#  NEW UPLOAD ENDPOINT (WHITELISTED PATHS)
+#########################################################################
+@app.route('/files/upload', methods=['POST'])
+def upload_file():
+    """
+    Expects:
+      - form field "targetPath": the exact path from ALLOWED_UPLOAD_PATHS
+      - form field "file": the uploaded file data
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+
+    file_to_upload = request.files['file']
+    target_path = request.form.get("targetPath", "")
+
+    if not target_path:
+        return jsonify({"error": "No target path provided"}), 400
+
+    # Check if the user-supplied target path is EXACTLY in the allowed list
+    if target_path not in ALLOWED_UPLOAD_PATHS:
+        return jsonify({"error": f"Target path '{target_path}' is not in upload whitelist"}), 403
+
+    try:
+        # Attempt to overwrite or create the file at targetPath
+        # We do not do safe_join here because the user is specifying the full path EXACTLY,
+        # and it must match one of the whitelisted items exactly. If you'd prefer partial
+        # directories or something else, you can adapt further.
+
+        with open(target_path, 'wb') as f:
+            f.write(file_to_upload.read())
+
+        return jsonify({"success": True, "message": f"File uploaded to '{target_path}' successfully."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+#########################################################################
+#  SERVE FILE-BROWSER HTML PAGE
+#########################################################################
+@app.route('/file-browser', methods=['GET'])
+def file_browser_page():
+    """
+    Serves the file-browser HTML snippet.
+    You can place that snippet in templates/file-browser.html.
+    """
+    return render_template('file-browser.html', settings=settings)
+
+
+#########################################################################
+#  BACKGROUND JSON STREAM READER
 #########################################################################
 def compute_derivative():
     window = settings["DERIVATIVE_WINDOW"]
@@ -680,7 +757,6 @@ def shutdown_signal_handler(signal_number, frame):
     print("Graceful shutdown initiated.")
     shutdown_flag.set()
     udp_streamer.stop()
-    # Attempt to stop running command
     with command_lock:
         if command_process and command_running_info["running"]:
             try:
