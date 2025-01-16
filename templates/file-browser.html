@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>File Browser & Uploader</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    h1 {
+      margin-bottom: 0.5rem;
+    }
+    #filesContainer {
+      margin-top: 1rem;
+    }
+    table {
+      border-collapse: collapse;
+      width: 80%;
+      max-width: 800px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 8px 12px;
+      text-align: left;
+    }
+    th {
+      background-color: #f0f0f0;
+    }
+    button {
+      margin: 2px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    #refreshBtn {
+      margin-bottom: 1rem;
+    }
+    #statusMessage {
+      color: #444;
+      margin-top: 1rem;
+      font-style: italic;
+    }
+    /* Upload forms container styling */
+    .upload-container {
+      margin-top: 2rem;
+      padding: 1rem;
+      border: 1px solid #ccc;
+      width: 80%;
+      max-width: 600px;
+    }
+    .upload-container h3 {
+      margin-top: 0;
+    }
+    .upload-form {
+      margin-bottom: 1rem;
+    }
+    .upload-form label {
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>File Browser</h1>
+  <p>View and manage files in the configured directory on the server.</p>
+
+  <button id="refreshBtn">Refresh File List</button>
+
+  <div id="filesContainer">
+    <!-- File table or message will be inserted here by JavaScript -->
+  </div>
+
+  <div id="statusMessage"></div>
+
+  <!-- UPLOAD SECTION -->
+  <div class="upload-container">
+    <h3>Upload Files to Whitelisted Paths</h3>
+    <p>Select a file from your local machine and upload it to one of the whitelisted target paths.</p>
+
+    <!-- 1) Upload to /usr/sbin/wfb-ng.sh -->
+    <form class="upload-form" onsubmit="event.preventDefault(); handleUpload('/usr/sbin/wfb-ng.sh', this);">
+      <label><strong>Target Path:</strong> /usr/sbin/wfb-ng.sh</label><br/>
+      <input type="file" name="file"/>
+      <button type="submit">Upload to wfb-ng.sh</button>
+    </form>
+
+    <!-- 2) Upload to /etc/wifibroadcast -->
+    <form class="upload-form" onsubmit="event.preventDefault(); handleUpload('/etc/wifibroadcast', this);">
+      <label><strong>Target Path:</strong> /etc/wifibroadcast</label><br/>
+      <input type="file" name="file"/>
+      <button type="submit">Upload to wifibroadcast</button>
+    </form>
+
+    <!-- 3) Upload to /etc/gs.key -->
+    <form class="upload-form" onsubmit="event.preventDefault(); handleUpload('/etc/gs.key', this);">
+      <label><strong>Target Path:</strong> /etc/gs.key</label><br/>
+      <input type="file" name="file"/>
+      <button type="submit">Upload to gs.key</button>
+    </form>
+  </div>
+
+  <script>
+    const filesContainer = document.getElementById('filesContainer');
+    const statusMessage = document.getElementById('statusMessage');
+    const refreshBtn = document.getElementById('refreshBtn');
+
+    refreshBtn.addEventListener('click', () => {
+      loadFiles();
+    });
+
+    // 1) Load file list from the server
+    function loadFiles() {
+      statusMessage.textContent = "Loading files...";
+      fetch('/files')
+        .then(response => response.json())
+        .then(data => {
+          if (data.error) {
+            filesContainer.innerHTML = `<p style="color:red;">Error: ${data.error}</p>`;
+            statusMessage.textContent = "";
+            return;
+          }
+
+          const directory = data.directory;
+          let files = data.files || [];
+
+          // Sort the files alphabetically by name
+          files.sort((a, b) => a.name.localeCompare(b.name));
+
+          renderFiles(directory, files);
+          statusMessage.textContent = "";
+        })
+        .catch(err => {
+          filesContainer.innerHTML = `<p style="color:red;">Error fetching file list: ${err}</p>`;
+          statusMessage.textContent = "";
+        });
+    }
+
+    // 2) Build the table of files
+    function renderFiles(directory, files) {
+      if (!files || files.length === 0) {
+        filesContainer.innerHTML = `<p>No files found in <strong>${directory}</strong></p>`;
+        return;
+      }
+
+      let html = `
+        <p>Listing files in <strong>${directory}</strong>:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>File Name</th>
+              <th>Size (bytes)</th>
+              <th>Last Modified</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      for (const file of files) {
+        const encodedName = encodeURIComponent(file.name);
+        html += `
+          <tr>
+            <td>${file.name}</td>
+            <td>${file.size}</td>
+            <td>${file.modified}</td>
+            <td>
+              <button onclick="downloadFile('${encodedName}')">Download</button>
+              <button onclick="deleteFile('${encodedName}')">Delete</button>
+            </td>
+          </tr>
+        `;
+      }
+
+      html += `
+          </tbody>
+        </table>
+      `;
+
+      filesContainer.innerHTML = html;
+    }
+
+    // 3) Download a file
+    function downloadFile(encodedName) {
+      const url = '/files/download/' + encodedName;
+      window.open(url, '_blank');
+    }
+
+    // 4) Delete a file
+    function deleteFile(encodedName) {
+      if (!confirm('Are you sure you want to delete this file?')) {
+        return;
+      }
+      statusMessage.textContent = "Deleting file...";
+
+      fetch('/files/delete/' + encodedName, { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          if (data.error) {
+            alert('Error: ' + data.error);
+          } else if (data.success) {
+            alert(data.message || "File deleted.");
+          }
+          loadFiles();
+        })
+        .catch(err => {
+          alert("Error deleting file: " + err);
+        })
+        .finally(() => {
+          statusMessage.textContent = "";
+        });
+    }
+
+    // 5) Handle upload to a whitelisted path
+    function handleUpload(targetPath, formElem) {
+      const fileInput = formElem.querySelector('input[type="file"]');
+      if (!fileInput || !fileInput.files.length) {
+        alert("Please choose a file to upload.");
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      formData.append('targetPath', targetPath);
+
+      statusMessage.textContent = `Uploading file to ${targetPath}...`;
+
+      fetch('/files/upload', {
+        method: 'POST',
+        body: formData
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          alert("Error: " + data.error);
+        } else if (data.success) {
+          alert(data.message);
+        }
+        // Clear the file input
+        fileInput.value = "";
+      })
+      .catch(err => {
+        alert("Error uploading file: " + err);
+      })
+      .finally(() => {
+        statusMessage.textContent = "";
+      });
+    }
+
+    // Auto-load files on page load
+    document.addEventListener('DOMContentLoaded', loadFiles);
+  </script>
+</body>
+</html>
