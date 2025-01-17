@@ -565,6 +565,37 @@ def upload_file():
         return jsonify({"error": str(e)}), 500
 
 
+
+
+
+@app.route('/files/download-whitelist', methods=['GET'])
+def download_from_whitelist():
+    """
+    Allows download of a file directly by specifying an exact whitelisted path.
+    Usage example:
+      GET /files/download-whitelist?targetPath=/etc/gs.key
+    """
+    target_path = request.args.get('targetPath', '')
+
+    # 1) Check if the user provided a path
+    if not target_path:
+        return jsonify({"error": "No targetPath provided"}), 400
+
+    # 2) Check if the target path is exactly in ALLOWED_UPLOAD_PATHS
+    if target_path not in ALLOWED_UPLOAD_PATHS:
+        return jsonify({"error": f"Target path '{target_path}' is not in download whitelist"}), 403
+
+    # 3) Verify the file actually exists
+    if not os.path.isfile(target_path):
+        return jsonify({"error": f"File '{target_path}' not found"}), 404
+
+    # 4) Serve it as an attachment
+    try:
+        return send_file(target_path, as_attachment=True)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 #########################################################################
 #  SERVE FILE-BROWSER HTML PAGE
 #########################################################################
