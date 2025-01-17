@@ -42,7 +42,7 @@
       margin-top: 1rem;
       font-style: italic;
     }
-    /* Upload forms container styling */
+    /* Upload & Download forms container styling */
     .upload-container {
       margin-top: 2rem;
       padding: 1rem;
@@ -53,10 +53,10 @@
     .upload-container h3 {
       margin-top: 0;
     }
-    .upload-form {
+    .upload-form, .download-form {
       margin-bottom: 1rem;
     }
-    .upload-form label {
+    .upload-form label, .download-form label {
       margin-right: 10px;
     }
   </style>
@@ -65,38 +65,43 @@
   <h1>File Browser</h1>
   <p>View and manage files in the configured directory on the server.</p>
 
+  <!-- Regular file-browsing UI (files in FILE_SERVE_DIR) -->
   <button id="refreshBtn">Refresh File List</button>
-
   <div id="filesContainer">
     <!-- File table or message will be inserted here by JavaScript -->
   </div>
-
   <div id="statusMessage"></div>
 
-  <!-- UPLOAD SECTION -->
+  <!-- WHITELISTED UPLOAD & DOWNLOAD SECTION -->
   <div class="upload-container">
-    <h3>Upload Files to Whitelisted Paths</h3>
-    <p>Select a file from your local machine and upload it to one of the whitelisted target paths.</p>
+    <h3>Whitelisted Upload & Download</h3>
+    <p>
+      Below you can upload files to, or download directly from, specific 
+      paths on the server that have been whitelisted.
+    </p>
 
-    <!-- 1) Upload to /usr/sbin/wfb-ng.sh -->
+    <!-- 1) /usr/sbin/wfb-ng.sh -->
     <form class="upload-form" onsubmit="event.preventDefault(); handleUpload('/usr/sbin/wfb-ng.sh', this);">
       <label><strong>Target Path:</strong> /usr/sbin/wfb-ng.sh</label><br/>
       <input type="file" name="file"/>
       <button type="submit">Upload to wfb-ng.sh</button>
+      <button type="button" onclick="handleDownloadWhitelist('/usr/sbin/wfb-ng.sh')">Download wfb-ng.sh</button>
     </form>
 
-    <!-- 2) Upload to /etc/wifibroadcast -->
-    <form class="upload-form" onsubmit="event.preventDefault(); handleUpload('/etc/wifibroadcast', this);">
-      <label><strong>Target Path:</strong> /etc/wifibroadcast</label><br/>
+    <!-- 2) /etc/wifibroadcast.cfg -->
+    <form class="upload-form" onsubmit="event.preventDefault(); handleUpload('/etc/wifibroadcast.cfg', this);">
+      <label><strong>Target Path:</strong> /etc/wifibroadcast.cfg</label><br/>
       <input type="file" name="file"/>
-      <button type="submit">Upload to wifibroadcast</button>
+      <button type="submit">Upload to wifibroadcast.cfg</button>
+      <button type="button" onclick="handleDownloadWhitelist('/etc/wifibroadcast.cfg')">Download wifibroadcast.cfg</button>
     </form>
 
-    <!-- 3) Upload to /etc/gs.key -->
+    <!-- 3) /etc/gs.key -->
     <form class="upload-form" onsubmit="event.preventDefault(); handleUpload('/etc/gs.key', this);">
       <label><strong>Target Path:</strong> /etc/gs.key</label><br/>
       <input type="file" name="file"/>
       <button type="submit">Upload to gs.key</button>
+      <button type="button" onclick="handleDownloadWhitelist('/etc/gs.key')">Download gs.key</button>
     </form>
   </div>
 
@@ -105,11 +110,13 @@
     const statusMessage = document.getElementById('statusMessage');
     const refreshBtn = document.getElementById('refreshBtn');
 
+    // -- Regular file browsing for FILE_SERVE_DIR --
+
     refreshBtn.addEventListener('click', () => {
       loadFiles();
     });
 
-    // 1) Load file list from the server
+    // 1) Load file list from the server (/files)
     function loadFiles() {
       statusMessage.textContent = "Loading files...";
       fetch('/files')
@@ -180,13 +187,13 @@
       filesContainer.innerHTML = html;
     }
 
-    // 3) Download a file
+    // 3) Download a file from FILE_SERVE_DIR
     function downloadFile(encodedName) {
       const url = '/files/download/' + encodedName;
       window.open(url, '_blank');
     }
 
-    // 4) Delete a file
+    // 4) Delete a file from FILE_SERVE_DIR
     function deleteFile(encodedName) {
       if (!confirm('Are you sure you want to delete this file?')) {
         return;
@@ -211,7 +218,12 @@
         });
     }
 
-    // 5) Handle upload to a whitelisted path
+    // Auto-load files on page load
+    document.addEventListener('DOMContentLoaded', loadFiles);
+
+    // -- Whitelisted Upload/Download --
+
+    // Upload a file to one of the whitelisted paths
     function handleUpload(targetPath, formElem) {
       const fileInput = formElem.querySelector('input[type="file"]');
       if (!fileInput || !fileInput.files.length) {
@@ -247,8 +259,19 @@
       });
     }
 
-    // Auto-load files on page load
-    document.addEventListener('DOMContentLoaded', loadFiles);
+    // Download from a whitelisted path (new endpoint)
+    function handleDownloadWhitelist(targetPath) {
+      statusMessage.textContent = `Downloading from ${targetPath}...`;
+      // We'll just open it in a new tab (like a normal file download).
+      // We assume you have an endpoint like /files/download-whitelist?targetPath=...
+      const url = `/files/download-whitelist?targetPath=${encodeURIComponent(targetPath)}`;
+      window.open(url, '_blank');
+
+      // Optionally clear status after a short delay (since it won't refresh automatically).
+      setTimeout(() => {
+        statusMessage.textContent = "";
+      }, 3000);
+    }
   </script>
 </body>
 </html>
