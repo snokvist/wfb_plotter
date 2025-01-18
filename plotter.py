@@ -622,6 +622,55 @@ def game_pad_page():
 
 
 
+
+#########################################################################
+#  SERVE CONFIG-PARSER
+#########################################################################
+
+@app.route('/config-editor', methods=['GET', 'POST'])
+def config_editor():
+    config_path = "/etc/wifibroadcast.cfg"  # Path to the configuration file
+
+    # Check if file is in the allowed upload paths
+    if config_path not in ALLOWED_UPLOAD_PATHS:
+        return jsonify({"error": f"File '{config_path}' is not in the allowed paths."}), 403
+
+    if request.method == 'POST':
+        # Save updated configuration
+        updated_data = request.form.to_dict(flat=True)
+        try:
+            # Parse and save updated data to the configuration file
+            parser = configparser.ConfigParser()
+            parser.read(config_path)
+            for key, value in updated_data.items():
+                section, field = key.split("___")  # Expect "section___key" naming in form fields
+                if section in parser and field in parser[section]:
+                    parser[section][field] = value
+
+            # Write back the configuration file
+            with open(config_path, 'w') as config_file:
+                parser.write(config_file)
+
+            return jsonify({"success": True, "message": "Configuration updated successfully."})
+        except Exception as e:
+            return jsonify({"error": f"Failed to update configuration: {e}"}), 500
+
+    # For GET request, load and render the configuration file
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(config_path)
+
+        # Pass data to the template as a dictionary
+        config_data = {section: dict(parser.items(section)) for section in parser.sections()}
+        return render_template('config_editor.html', config=config_data)
+    except Exception as e:
+        return jsonify({"error": f"Failed to read configuration: {e}"}), 500
+
+
+
+
+
+
 #########################################################################
 #  BACKGROUND JSON STREAM READER
 #########################################################################
