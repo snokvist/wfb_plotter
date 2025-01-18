@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Gamepad Control</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    h1 {
+      margin-bottom: 16px;
+    }
+
+    /* Container for the whole gamepad layout */
+    .gamepad-container {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-around;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    /* Each directional pad container */
+    .dpad {
+      display: grid;
+      grid-template-columns: 60px 60px 60px;
+      grid-template-rows: 60px 60px 60px;
+      grid-gap: 10px;
+    }
+
+    /* Place the arrow buttons in a cross shape */
+    .dpad-up {
+      grid-column: 2; /* center column */
+      grid-row: 1;    /* top row */
+    }
+    .dpad-down {
+      grid-column: 2; /* center column */
+      grid-row: 3;    /* bottom row */
+    }
+    .dpad-left {
+      grid-column: 1; /* left column */
+      grid-row: 2;    /* middle row */
+    }
+    .dpad-right {
+      grid-column: 3; /* right column */
+      grid-row: 2;    /* middle row */
+    }
+    .dpad button {
+      width: 60px;
+      height: 60px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    /* The 4 user buttons area */
+    .user-buttons {
+      display: grid;
+      grid-template-columns: 80px 80px;
+      grid-template-rows: 80px 80px;
+      grid-gap: 10px;
+    }
+    .user-buttons button {
+      width: 80px;
+      height: 80px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    /* Status display (similar to your other UI) */
+    #statusIndicator {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin-right: 4px;
+      vertical-align: middle;
+      background-color: red; /* default: stopped */
+    }
+
+    #logArea {
+      width: 100%;
+      height: 200px;
+      background-color: #1e1e1e;
+      color: #ddd;
+      font-family: monospace;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      padding: 8px;
+      border-radius: 4px;
+      margin-top: 10px;
+    }
+
+    /* Optional small styling for the stop/clear buttons */
+    .control-buttons > button {
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Gamepad Control</h1>
+
+  <!-- Status display -->
+  <div>
+    <span id="statusIndicator"></span>
+    <span id="statusText">No command running</span>
+  </div>
+  <hr/>
+
+  <!-- Main container for the two DPads and the 4 user buttons in the middle -->
+  <div class="gamepad-container">
+    
+    <!-- LEFT DPAD -->
+    <div class="dpad">
+      <button class="dpad-up"    onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'L_UP')">Up</button>
+      <button class="dpad-down"  onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'L_DOWN')">Down</button>
+      <button class="dpad-left"  onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'L_LEFT')">Left</button>
+      <button class="dpad-right" onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'L_RIGHT')">Right</button>
+    </div>
+
+    <!-- 4 USER BUTTONS -->
+    <div class="user-buttons">
+      <button onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'BUTTON1')">B1</button>
+      <button onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'BUTTON2')">B2</button>
+      <button onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'BUTTON3')">B3</button>
+      <button onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'BUTTON4')">B4</button>
+    </div>
+
+    <!-- RIGHT DPAD -->
+    <div class="dpad">
+      <button class="dpad-up"    onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'R_UP')">Up</button>
+      <button class="dpad-down"  onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'R_DOWN')">Down</button>
+      <button class="dpad-left"  onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'R_LEFT')">Left</button>
+      <button class="dpad-right" onclick="attemptStart('/usr/bin/extcmd_gamepad.sh', 'R_RIGHT')">Right</button>
+    </div>
+
+  </div>
+
+  <!-- Log window for command output, if desired -->
+  <pre id="logArea"></pre>
+
+  <!-- Control buttons at the bottom (optional) -->
+  <div class="control-buttons">
+    <button onclick="stopCommand()">Stop</button>
+    <button onclick="clearLog()">Clear Log</button>
+  </div>
+
+  <script>
+    // Reusing the SSE and concurrency approach from your existing code:
+    let eventSource = null;
+    let isRunning = false; 
+    const statusText = document.getElementById('statusText');
+    const statusIndicator = document.getElementById('statusIndicator');
+    const logArea = document.getElementById('logArea');
+
+    // Attempt to start a command if no command is running
+    function attemptStart(command, argValue) {
+      if (isRunning) {
+        alert("A command is already running. Please stop it first.");
+        return;
+      }
+      // We'll pass just one argument (e.g. "BUTTON1")
+      startCommand(command, [argValue]);
+    }
+
+    // Start the command
+    function startCommand(command, args) {
+      closeSSE();
+      fetch('/command/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ command, args })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) {
+          alert("Error: " + data.message);
+          return;
+        }
+        // Command started successfully
+        clearLog();
+        connectSSE();
+        updateStatus();
+      })
+      .catch(err => console.error(err));
+    }
+
+    // Stop current command
+    function stopCommand() {
+      fetch('/command/stop', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          // Even if error, refresh
+          updateStatus();
+        })
+        .catch(err => console.error(err));
+    }
+
+    // SSE for real-time output
+    function connectSSE() {
+      eventSource = new EventSource('/command/stream');
+
+      eventSource.onmessage = (evt) => {
+        logArea.textContent += evt.data + "\n";
+        logArea.scrollTop = logArea.scrollHeight;
+      };
+
+      eventSource.onerror = (evt) => {
+        console.warn("SSE error", evt);
+      };
+    }
+
+    function closeSSE() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    }
+
+    function clearLog() {
+      logArea.textContent = "";
+    }
+
+    // Periodic status check
+    function updateStatus() {
+      fetch('/command/status')
+        .then(r => r.json())
+        .then(info => {
+          isRunning = info.running;
+          if (info.running) {
+            statusIndicator.style.backgroundColor = 'green';
+            const cmdStr = [info.cmd, ...(info.args || [])].join(' ');
+            statusText.textContent = `Running: ${cmdStr}`;
+            if (!eventSource) {
+              connectSSE();
+            }
+          } else {
+            statusIndicator.style.backgroundColor = 'red';
+            statusText.textContent = `Stopped (exit code: ${info.exit_code})`;
+            closeSSE();
+          }
+        })
+        .catch(err => console.error(err));
+    }
+
+    // Poll status every 2s
+    setInterval(updateStatus, 2000);
+    document.addEventListener('DOMContentLoaded', updateStatus);
+  </script>
+</body>
+</html>
+
