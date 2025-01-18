@@ -167,6 +167,13 @@
       vertical-align: middle;
       background-color: red; /* default: stopped */
     }
+    .presetCommandRow {
+      margin-bottom: 8px;
+    }
+    .presetCommandRow input {
+      width: 300px;
+      margin-left: 10px;
+    }
   </style>
 </head>
 <body>
@@ -180,14 +187,50 @@
 
   <hr />
 
-  <!-- Preset Commands -->
+  <!-- Preset Commands (with textboxes for arguments) -->
   <div>
-    <button class="cmdButton" onclick="attemptStart('/usr/bin/extcmd_userscript1.sh')">Script 1</button>
-    <button class="cmdButton" onclick="attemptStart('/usr/bin/extcmd_userscript2.sh')">Script 2</button>
-    <button class="cmdButton" onclick="attemptStart('/usr/bin/extcmd_userscript3.sh')">Script 3</button>
-    <button class="cmdButton" onclick="attemptStart('/usr/bin/extcmd_userscript4.sh')">Script 4</button>
-    <button class="cmdButton" onclick="attemptStart('/usr/bin/extcmd_userscript5.sh')">Script 5</button>
-    <button class="cmdButton" onclick="attemptStart('/usr/bin/extcmd_userscript6.sh')">Script 6</button>
+    <div class="presetCommandRow">
+      <button class="cmdButton" 
+              onclick="attemptStart('/usr/bin/extcmd_userscript1.sh', document.getElementById('argScript1').value)">
+        Script 1
+      </button>
+      <input type="text" id="argScript1" placeholder="e.g. /etc/wifibroadcast.cfg peer 'connect://...'">
+    </div>
+    <div class="presetCommandRow">
+      <button class="cmdButton" 
+              onclick="attemptStart('/usr/bin/extcmd_userscript2.sh', document.getElementById('argScript2').value)">
+        Script 2
+      </button>
+      <input type="text" id="argScript2" placeholder="Multiple arguments OK">
+    </div>
+    <div class="presetCommandRow">
+      <button class="cmdButton" 
+              onclick="attemptStart('/usr/bin/extcmd_userscript3.sh', document.getElementById('argScript3').value)">
+        Script 3
+      </button>
+      <input type="text" id="argScript3" placeholder="Multiple arguments OK">
+    </div>
+    <div class="presetCommandRow">
+      <button class="cmdButton" 
+              onclick="attemptStart('/usr/bin/extcmd_userscript4.sh', document.getElementById('argScript4').value)">
+        Script 4
+      </button>
+      <input type="text" id="argScript4" placeholder="Multiple arguments OK">
+    </div>
+    <div class="presetCommandRow">
+      <button class="cmdButton" 
+              onclick="attemptStart('/usr/bin/extcmd_userscript5.sh', document.getElementById('argScript5').value)">
+        Script 5
+      </button>
+      <input type="text" id="argScript5" placeholder="Multiple arguments OK">
+    </div>
+    <div class="presetCommandRow">
+      <button class="cmdButton" 
+              onclick="attemptStart('/usr/bin/extcmd_userscript6.sh', document.getElementById('argScript6').value)">
+        Script 6
+      </button>
+      <input type="text" id="argScript6" placeholder="Multiple arguments OK">
+    </div>
   </div>
 
   <hr />
@@ -211,23 +254,48 @@
     const logArea = document.getElementById('logArea');
     const inputField = document.getElementById('inputField');
 
+    // -------------
+    // ARG PARSER
+    // -------------
+    // This function splits a string into arguments, respecting
+    // both single or double quotes. For example, the user might type:
+    //   /etc/wifibroadcast.cfg peer 'connect://192.168.1.242:5601'
+    // This should parse into:
+    //   ["/etc/wifibroadcast.cfg", "peer", "connect://192.168.1.242:5601"]
+    //
+    function parseArgString(str) {
+      // Regex: match either double-quoted text, single-quoted text, or unquoted text.
+      const regex = /"([^"]*)"|'([^']*)'|(\S+)/g;
+      const args = [];
+      let match;
+      while ((match = regex.exec(str)) !== null) {
+        // match[1] = text in double quotes (no quotes included)
+        // match[2] = text in single quotes (no quotes included)
+        // match[3] = an unquoted token
+        args.push(match[1] || match[2] || match[3]);
+      }
+      return args;
+    }
+
     // 1) Attempt to start a command only if no command is running
     //    Otherwise, prompt the user or do nothing.
-    function attemptStart(command) {
+    function attemptStart(command, argValue) {
       if (isRunning) {
         alert("A command is already running. Please stop it first.");
         return;
       }
-      startCommand(command);
+      // Parse the user input into an array of arguments
+      const argsArr = parseArgString(argValue || "");
+      startCommand(command, argsArr);
     }
 
     // 2) Start a command
-    function startCommand(command) {
+    function startCommand(command, args) {
       closeSSE(); // Just to be sure we reset any old connection
       fetch('/command/start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ command })
+        body: JSON.stringify({ command, args })
       })
       .then(r => r.json())
       .then(data => {
@@ -342,6 +410,4 @@
     });
   </script>
 </body>
-
 </html>
-
