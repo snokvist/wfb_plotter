@@ -629,42 +629,147 @@ def game_pad_page():
 
 @app.route('/config-editor', methods=['GET', 'POST'])
 def config_editor():
-    config_path = "/etc/wifibroadcast.cfg"  # Path to the configuration file
+    """
+    Allows selecting a whitelisted config file, viewing its sections and settings,
+    adding/removing sections/settings, and saving changes. No file is autoloaded initially.
+    """
+    selected_path = request.args.get('file', None)  # No default file loaded.
 
-    # Check if file is in the allowed upload paths
-    if config_path not in ALLOWED_UPLOAD_PATHS:
-        return jsonify({"error": f"File '{config_path}' is not in the allowed paths."}), 403
-
+    # Handle saving updated data (POST)
     if request.method == 'POST':
-        # Save updated configuration
-        updated_data = request.form.to_dict(flat=True)
+        selected_path_post = request.args.get('file', None)
+        if not selected_path_post:
+            return render_template(
+                'config_editor.html',
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=None,
+                config=None,
+                error="No file selected to save."
+            )
+
+        # Check if the file is whitelisted
+        if selected_path_post not in ALLOWED_UPLOAD_PATHS:
+            return render_template(
+                'config_editor.html',
+                error=f"File '{selected_path_post}' is not in the allowed paths.",
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=None,
+                config=None,
+            )
+
+        # Parse the JSON representing the final config from the hidden field
+        updated_json = request.form.get('config_json', '')
         try:
-            # Parse and save updated data to the configuration file
-            parser = configparser.ConfigParser()
-            parser.read(config_path)
-            for key, value in updated_data.items():
-                section, field = key.split("___")  # Expect "section___key" naming in form fields
-                if section in parser and field in parser[section]:
-                    parser[section][field] = value
+            config_data = json.loads(updated_json)
+        except json.JSONDecodeError:
+            return render_template(
+                'config_editor.html',
+                error="Invalid JSON data submitted.",
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=selected_path_post,
+                config=None,
+            )
 
-            # Write back the configuration file
-            with open(config_path, 'w') as config_file:
-                parser.write(config_file)
+        # Rebuild the file from scratch (discarding original comments)
+        lines_to_write = []
+        for section, kv_dict in config_data.items():
+            section_str = section.strip()
+            if not section_str:
+                # Skip empty section names
+                continue
+            lines_to_write.append(f"[{section_str}]\n")
+            for key, value in kv_dict.items():
+                key_str = key.strip()
+                if not key_str:
+                    # Skip empty key names
+                    continue
+                lines_to_write.append(f"{key_str} = {value}\n")
+            lines_to_write.append("\n")
 
-            return jsonify({"success": True, "message": "Configuration updated successfully."})
+        try:
+            with open(selected_path_post, 'w', encoding='utf-8') as f:
+                f.writelines(lines_to_write)
         except Exception as e:
-            return jsonify({"error": f"Failed to update configuration: {e}"}), 500
+            return render_template(
+                'config_editor.html',
+                error=f"Failed to write configuration: {e}",
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=selected_path_post,
+                config=config_data,
+            )
 
-    # For GET request, load and render the configuration file
-    try:
-        parser = configparser.ConfigParser()
-        parser.read(config_path)
+        return render_template(
+            'config_editor.html',
+            whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+            selected_path=selected_path_post,
+            config=config_data,
+            info="Configuration updated successfully.",
+        )
 
-        # Pass data to the template as a dictionary
-        config_data = {section: dict(parser.items(section)) for section in parser.sections()}
-        return render_template('config_editor.html', config=config_data)
-    except Exception as e:
-        return jsonify({"error": f"Failed to read configuration: {e}"}), 500
+    # Handle GET: either no file is selected or a specific file is chosen
+    if selected_path:
+        # Ensure the file is in the whitelist
+        if selected_path not in ALLOWED_UPLOAD_PATHS:
+            return render_template(
+                'config_editor.html',
+                error=f"File '{selected_path}' is not in the allowed paths.",
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=None,
+                config=None,
+            )
+        # Attempt to read the file
+        try:
+            with open(selected_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            config_data = {}
+            current_section = None
+
+            for line in lines:
+                stripped = line.strip()
+                # Detect sections
+                if stripped.startswith('[') and stripped.endswith(']'):
+                    current_section = stripped[1:-1]
+                    config_data[current_section] = {}
+                # Detect key-value pairs
+                elif '=' in stripped and current_section:
+                    key, value = map(str.strip, stripped.split('=', 1))
+                    config_data[current_section][key] = value
+
+            return render_template(
+                'config_editor.html',
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=selected_path,
+                config=config_data,
+                error=None,
+            )
+        except UnicodeDecodeError:
+            # Binary or invalid text file
+            return render_template(
+                'config_editor.html',
+                error=f"Cannot read binary file: {selected_path}",
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=selected_path,
+                config=None,
+            )
+        except Exception as e:
+            return render_template(
+                'config_editor.html',
+                error=f"Failed to read configuration: {e}",
+                whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+                selected_path=selected_path,
+                config=None,
+            )
+
+    # Render the page without loading any file if no file is selected
+    return render_template(
+        'config_editor.html',
+        whitelisted_paths=ALLOWED_UPLOAD_PATHS,
+        selected_path=None,
+        config=None,
+        error=None,
+    )
+
 
 
 
