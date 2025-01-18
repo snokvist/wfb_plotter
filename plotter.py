@@ -608,6 +608,20 @@ def file_browser_page():
     return render_template('file-browser.html', settings=settings)
 
 
+
+#########################################################################
+#  SERVE GAMEPAD
+#########################################################################
+@app.route('/game-pad', methods=['GET'])
+def game_pad_page():
+    """
+    Serves the file-browser HTML snippet.
+    You can place that snippet in templates/game-pad.html.
+    """
+    return render_template('game-pad.html', settings=settings)
+
+
+
 #########################################################################
 #  BACKGROUND JSON STREAM READER
 #########################################################################
