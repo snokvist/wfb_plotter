@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Configuration Editor</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <script>
+    // Load current config from server (if available) into a JS object
+    let configData = {{ config|tojson if config else "{}" | safe }};
+
+    // Switch to a selected file
+    function onFileChange() {
+      const selectedFile = document.getElementById('whitelist').value;
+      if (selectedFile) {
+        window.location.href = `/config-editor?file=${encodeURIComponent(selectedFile)}`;
+      } else {
+        // If user picks blank, just go to /config-editor
+        window.location.href = '/config-editor';
+      }
+    }
+
+    // Render the configData into the DOM
+    function renderConfig() {
+      const container = document.getElementById("config-sections");
+      container.innerHTML = "";
+
+      // For each section in configData
+      for (const [section, settings] of Object.entries(configData)) {
+        const fieldset = document.createElement("fieldset");
+        fieldset.className = "border p-3 mb-4";
+
+        // Legend (section name only; no remove button)
+        const legend = document.createElement("legend");
+        legend.className = "w-auto";
+        legend.textContent = section;
+        fieldset.appendChild(legend);
+
+        // For each setting in this section
+        for (const [key, value] of Object.entries(settings)) {
+          const row = document.createElement("div");
+          row.className = "mb-3 d-flex align-items-center";
+
+          // Key label
+          const label = document.createElement("label");
+          label.className = "form-label me-2 mb-0";
+          label.innerHTML = `<strong>${key}</strong>`;
+
+          // Text input for value
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "form-control me-2";
+          input.value = value;
+          input.style.maxWidth = "400px";
+
+          row.appendChild(label);
+          row.appendChild(input);
+          fieldset.appendChild(row);
+        }
+
+        container.appendChild(fieldset);
+      }
+    }
+
+    // Gather data from UI inputs and submit as JSON
+    function prepareAndSubmit() {
+      // Re-scan the rendered inputs
+      const container = document.getElementById("config-sections");
+      const fieldsets = container.querySelectorAll("fieldset");
+      const newConfig = {};
+
+      fieldsets.forEach(fieldset => {
+        const legendEl = fieldset.querySelector("legend");
+        if (!legendEl) return;
+
+        const sectionName = legendEl.innerText.trim();
+        newConfig[sectionName] = {};
+
+        // Each row (div.mb-3.d-flex)
+        const rows = fieldset.querySelectorAll("div.mb-3.d-flex");
+        rows.forEach(row => {
+          const label = row.querySelector("label");
+          const input = row.querySelector("input");
+          if (!label || !input) return;
+          const key = label.innerText.trim();
+          const val = input.value;
+          newConfig[sectionName][key] = val;
+        });
+      });
+
+      document.getElementById("config_json").value = JSON.stringify(newConfig);
+      document.getElementById("configForm").submit();
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      renderConfig();
+    });
+  </script>
+</head>
+<body class="container mt-4">
+  <!-- Top row: Return + Save (if config loaded) -->
+  <div class="d-flex align-items-center justify-content-start mb-3 gap-2">
+    <a href="/" class="btn btn-primary">Return to Front Page</a>
+    {% if config %}
+      <button type="button" class="btn btn-primary" onclick="prepareAndSubmit()">Save Changes</button>
+    {% endif %}
+  </div>
+
+  <!-- Dropdown for selecting config file -->
+  <fieldset class="border p-3 mb-4">
+    <legend class="w-auto">Select Configuration File</legend>
+    <div class="mb-3">
+      <label for="whitelist" class="form-label">Target Path</label>
+      <select class="form-select" id="whitelist" name="whitelist" onchange="onFileChange()">
+        <option value="">-- Select a file --</option>
+        {% for path in whitelisted_paths %}
+        <option value="{{ path }}" {% if path == selected_path %}selected{% endif %}>{{ path }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </fieldset>
+
+  <!-- Display any error or info messages -->
+  {% if error %}
+    <div class="alert alert-danger mb-3">
+      {{ error }}
+    </div>
+  {% endif %}
+  {% if info %}
+    <div class="alert alert-info mb-3">
+      {{ info }}
+    </div>
+  {% endif %}
+
+  <!-- If a config file is loaded, allow editing (without add/remove) -->
+  {% if config %}
+    <form id="configForm" action="/config-editor?file={{ selected_path }}" method="post">
+      <!-- Hidden field to store final JSON representation -->
+      <input type="hidden" name="config_json" id="config_json">
+      <div id="config-sections"></div>
+    </form>
+  {% endif %}
+</body>
+</html>
