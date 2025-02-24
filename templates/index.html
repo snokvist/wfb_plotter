@@ -134,7 +134,7 @@
                 maintainAspectRatio: false,
                 animation: false,
                 elements: { point: { radius: 0 } },
-                scales: { y: { beginAtZero: true, max: 1 } },
+                scales: { y: { min: -105, max: 0 } },  // Changed for raw RSSI values
                 plugins: { legend: { display: true }, zoom: zoomOptions },
             },
         });
@@ -147,7 +147,7 @@
                 maintainAspectRatio: false,
                 animation: false,
                 elements: { point: { radius: 0 } },
-                scales: { y: { beginAtZero: true, max: 1 } },
+                scales: { y: { min: 0, max: 38 } },  // Changed for raw SNR values
                 plugins: { legend: { display: true }, zoom: zoomOptions },
             },
         });
@@ -201,7 +201,7 @@
             fetch('/data')
                 .then((response) => response.json())
                 .then((data) => {
-                    const { rssi, snr, redundancy, derivative, fec_rec, lost, all_mbit, out_mbit, sample_indices, colors, settings } = data;
+                    const { redundancy, derivative, fec_rec, lost, all_mbit, out_mbit, sample_indices, colors, settings } = data;
 
                     // Update Y-axis limits for Mbit/s chart
                     updateYAxisLimits(mbitChart, settings.MBIT_MIN, settings.MBIT_MAX);
@@ -211,12 +211,6 @@
                     mbitChart.data.datasets[0].data = all_mbit;
                     mbitChart.data.datasets[1].data = out_mbit;
                     mbitChart.update();
-
-                    // Update RSSI Chart
-                    updateChart(rssiChart, rssi, sample_indices, colors);
-
-                    // Update SNR Chart
-                    updateChart(snrChart, snr, sample_indices, colors);
 
                     // Update Redundancy Chart
                     redundancyChart.data.labels = sample_indices;
@@ -229,6 +223,16 @@
                     derivativeChart.data.datasets[1].data = fec_rec;
                     derivativeChart.data.datasets[2].data = lost;
                     derivativeChart.update();
+                });
+
+            // Fetch raw data for RSSI and SNR
+            fetch('/data/raw')
+                .then((response) => response.json())
+                .then((rawData) => {
+                    // Update RSSI Chart using raw values
+                    updateChart(rssiChart, rawData.raw_rssi, rawData.sample_indices, {});
+                    // Update SNR Chart using raw values
+                    updateChart(snrChart, rawData.raw_snr, rawData.sample_indices, {});
                 });
         }
 
